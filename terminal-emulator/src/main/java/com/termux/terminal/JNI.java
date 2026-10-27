@@ -31,9 +31,15 @@ final class JNI {
     /**
      * Causes the calling thread to wait for the process associated with the receiver to finish executing.
      *
-     * @return exit status, negative terminating signal, or {@link Integer#MIN_VALUE} on wait failure.
+     * @return if >= 0, the exit status; if < 0, the negated signal; Integer.MIN_VALUE if waitpid fails.
      */
     public static native int waitFor(int processId);
+
+    /** Return a pidfd or a negative errno if unavailable. */
+    public static native int openProcessHandle(int processId);
+
+    /** Signal through a pidfd; returns zero or a negative errno. */
+    public static native int signalProcessHandle(int fileDescriptor, int signal);
 
     /** Close a file descriptor through the close(2) system call. */
     public static native void close(int fileDescriptor);

@@ -97,6 +97,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
      * Termux app shell manager
      */
     private TermuxShellManager mShellManager;
+    private com.termux.app.control.ControlCore mControlCore;
+    private boolean mControlAvailable;
+    private boolean mSafeControlCloseEnabled;
 
     /** The wake lock and wifi lock are always acquired and released together. */
     private PowerManager.WakeLock mWakeLock;
@@ -116,6 +119,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         mProperties = TermuxAppSharedProperties.getProperties();
 
         mShellManager = TermuxShellManager.getShellManager();
+        TerminalSession.setProcessHandlesEnabled(false);
+        mControlCore = new com.termux.app.control.ControlCore(new com.termux.app.control.TermuxControlBackend(this));
+        mControlAvailable = true;
 
         runStartForeground();
 
@@ -168,6 +174,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     @Override
     public void onDestroy() {
         Logger.logVerbose(LOG_TAG, "onDestroy");
+        if (mControlAvailable) setSafeControlCloseEnabled(false);
+        else TerminalSession.setProcessHandlesEnabled(false);
+        mControlAvailable = false;
 
         TermuxShellUtils.clearTermuxTMPDIR(true);
 
@@ -872,6 +881,78 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
     public synchronized boolean isTermuxSessionsEmpty() {
         return mShellManager.mTermuxSessions.isEmpty();
+    }
+
+    /** In-process core; callers must establish authorization independently. */
+    public com.termux.app.control.ControlCore getControlCore() { return mControlCore; }
+
+    public boolean isControlAvailable() { return mControlAvailable; }
+
+    /** Local opt-in for new sessions; no remote caller may grant itself this setting. */
+    public void setSafeControlCloseEnabled(boolean enabled) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
+            throw new IllegalStateException("Control service unavailable on this thread");
+        mSafeControlCloseEnabled = enabled;
+        TerminalSession.setProcessHandlesEnabled(enabled);
+        if (!enabled) {
+            synchronized (this) {
+                for (TermuxSession item : mShellManager.mTermuxSessions)
+                    item.getTerminalSession().releaseProcessHandle();
+            }
+        }
+    }
+
+    public boolean isSafeControlCloseEnabled() { return mSafeControlCloseEnabled; }
+
+    public String getControlDefaultWorkingDirectory() {
+        return mProperties.getDefaultWorkingDirectory();
+    }
+
+    /** Remove only an unstarted, non-plugin session after PTY initialization failed. */
+    public boolean discardUnstartedControlSession(TermuxSession item) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
+            throw new IllegalStateException("Control service unavailable on this thread");
+        synchronized (this) {
+            TerminalSession session = item.getTerminalSession();
+            if (session.getPid() != 0 || session.getEmulator() != null
+                || item.getExecutionCommand().isPluginExecutionCommand
+                || !mShellManager.mTermuxSessions.remove(item)) return false;
+            item.getExecutionCommand().setStateFailed(Errno.ERRNO_FAILED.getCode(), "Terminal initialization failed");
+        }
+        if (mTermuxTerminalSessionActivityClient != null)
+            mTermuxTerminalSessionActivityClient.termuxSessionListNotifyUpdated();
+        updateNotification();
+        return true;
+    }
+
+    /** A visible local terminal controls its own geometry. Called on the main thread. */
+    public boolean isSessionVisibleForControl(TerminalSession session) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
+            throw new IllegalStateException("Control service unavailable on this thread");
+        return mTermuxTerminalSessionActivityClient != null
+            && mTermuxTerminalSessionActivityClient.isSessionVisible(session);
+    }
+
+    /** Rename an existing session on the main thread and refresh the session list. */
+    public boolean renameSessionForControl(String id, String name) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
+            throw new IllegalStateException("Control service unavailable on this thread");
+        TermuxSession selected = null;
+        synchronized (this) {
+            for (TermuxSession item : mShellManager.mTermuxSessions) {
+                if (id.equals(item.getTerminalSession().mHandle)) {
+                    selected = item;
+                    selected.getTerminalSession().mSessionName = name;
+                    selected.getExecutionCommand().shellName = name;
+                    break;
+                }
+            }
+        }
+        if (selected == null) return false;
+        if (mTermuxTerminalSessionActivityClient != null)
+            mTermuxTerminalSessionActivityClient.termuxSessionListNotifyUpdated();
+        updateNotification();
+        return true;
     }
 
     public synchronized int getTermuxSessionsSize() {
