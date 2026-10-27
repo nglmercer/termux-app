@@ -27,6 +27,8 @@ import android.widget.RelativeLayout;
 import android.widget.Toast;
 
 import com.termux.R;
+import com.termux.app.monitor.ProcessSnapshot;
+import com.termux.app.monitor.DeviceSnapshot;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
@@ -66,6 +68,7 @@ import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.viewpager.widget.ViewPager;
 
 import java.util.Arrays;
+import java.lang.ref.WeakReference;
 
 /**
  * A terminal emulator activity.
@@ -188,6 +191,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_HELP_ID = 7;
     private static final int CONTEXT_MENU_SETTINGS_ID = 8;
     private static final int CONTEXT_MENU_REPORT_ID = 9;
+    private static final int CONTEXT_MENU_PROCESS_SNAPSHOT = 15;
+    private final java.util.concurrent.atomic.AtomicBoolean mProcessSnapshotBusy = new java.util.concurrent.atomic.AtomicBoolean();
+    private AlertDialog mProcessDialog;
+    private final android.os.Handler mProcessRefreshHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable mProcessRefresh = this::loadProcessSnapshot;
+    private boolean mProcessAutoRefresh;
+    private int mProcessDialogGeneration;
+    private ProcessSnapshot mPreviousProcessSnapshot;
+    private java.util.Set<Integer> mPreviousProcessRoots;
+    private long mPreviousProcessSnapshotTime;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -331,6 +344,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mIsInvalidState) return;
 
         mIsVisible = false;
+        if (mProcessDialog != null) mProcessDialog.dismiss();
+        mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
 
         if (mTermuxTerminalSessionActivityClient != null)
             mTermuxTerminalSessionActivityClient.onStop();
@@ -633,6 +648,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         boolean autoFillEnabled = mTerminalView.isAutoFillEnabled();
 
+        menu.add(Menu.NONE, CONTEXT_MENU_PROCESS_SNAPSHOT, Menu.NONE, R.string.action_process_snapshot);
         menu.add(Menu.NONE, CONTEXT_MENU_SELECT_URL_ID, Menu.NONE, R.string.action_select_url);
         menu.add(Menu.NONE, CONTEXT_MENU_SHARE_TRANSCRIPT_ID, Menu.NONE, R.string.action_share_transcript);
         if (!DataUtils.isNullOrEmpty(mTerminalView.getStoredSelectedText()))
@@ -662,6 +678,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TerminalSession session = getCurrentSession();
 
         switch (item.getItemId()) {
+            case CONTEXT_MENU_PROCESS_SNAPSHOT:
+                requestProcessSnapshot();
+                return true;
             case CONTEXT_MENU_SELECT_URL_ID:
                 mTermuxTerminalViewClient.showUrlSelection();
                 return true;
@@ -787,6 +806,153 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
             }
         }.start();
+    }
+
+    private void requestProcessSnapshot() {
+        if (mProcessDialog != null) return;
+        mProcessAutoRefresh = true;
+        ++mProcessDialogGeneration;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle(R.string.action_process_snapshot)
+            .setMessage(R.string.process_snapshot_loading)
+            .setPositiveButton(R.string.process_snapshot_refresh, null)
+            .setNeutralButton(R.string.process_snapshot_pause, null)
+            .setNegativeButton(android.R.string.cancel, null).create();
+        mProcessDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (mProcessDialog != dialog) return;
+            mProcessDialog = null;
+            ++mProcessDialogGeneration;
+            mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
+            mPreviousProcessSnapshot = null;
+            mPreviousProcessRoots = null;
+        });
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> loadProcessSnapshot());
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                mProcessAutoRefresh = !mProcessAutoRefresh;
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setText(mProcessAutoRefresh ?
+                    R.string.process_snapshot_pause : R.string.process_snapshot_resume);
+                mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
+                if (mProcessAutoRefresh) loadProcessSnapshot();
+            });
+        });
+        dialog.show();
+        loadProcessSnapshot();
+    }
+
+    private void scheduleProcessRefresh() {
+        mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
+        if (mProcessDialog != null && mProcessAutoRefresh && mIsVisible)
+            mProcessRefreshHandler.postDelayed(mProcessRefresh, 2000);
+    }
+
+    private void loadProcessSnapshot() {
+        if (mProcessDialog == null || !mIsVisible || !mProcessSnapshotBusy.compareAndSet(false, true)) return;
+        final int generation = mProcessDialogGeneration;
+        TermuxService service = getTermuxService();
+        if (service == null) {
+            mProcessSnapshotBusy.set(false);
+            mProcessDialog.setMessage(getString(R.string.process_snapshot_failed));
+            scheduleProcessRefresh();
+            return;
+        }
+        final TermuxService.MonitorRoots monitorRoots = service.getMonitorRoots();
+        final java.util.Set<Integer> roots = monitorRoots.pids;
+        final java.util.concurrent.atomic.AtomicBoolean busy = mProcessSnapshotBusy;
+        final WeakReference<TermuxActivity> activity = new WeakReference<>(this);
+        final Context appContext = getApplicationContext();
+        final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+        try {
+            new Thread(() -> {
+                ProcessSnapshot result;
+                try { result = ProcessSnapshot.collect(new java.io.File("/proc"), android.os.Process.myUid(), roots); }
+                catch (RuntimeException e) { result = null; }
+                final ProcessSnapshot snapshot = result;
+                final long sampledAt = android.os.SystemClock.elapsedRealtime();
+                long tickValue = -1, pageValue = -1;
+                try {
+                    tickValue = android.system.Os.sysconf(android.system.OsConstants._SC_CLK_TCK);
+                    pageValue = android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE);
+                } catch (RuntimeException ignored) { }
+                final long ticksPerSecond = tickValue, pageSize = pageValue;
+                final DeviceSnapshot device = DeviceSnapshot.collect(appContext);
+                main.post(() -> {
+                    busy.set(false);
+                    TermuxActivity current = activity.get();
+                    if (current == null || !current.isVisible() || current.isFinishing() || current.mProcessDialog == null) return;
+                    if (generation != current.mProcessDialogGeneration) {
+                        if (current.mProcessAutoRefresh) current.loadProcessSnapshot();
+                        return;
+                    }
+                    if (snapshot == null) {
+                        current.mProcessDialog.setMessage(current.getString(R.string.process_snapshot_failed));
+                    } else {
+                        TermuxService currentService = current.getTermuxService();
+                        TermuxService.MonitorRoots currentRoots = currentService == null ? null : currentService.getMonitorRoots();
+                        if (currentRoots == null || !roots.equals(currentRoots.pids) ||
+                            monitorRoots.unknownTaskPids != currentRoots.unknownTaskPids) {
+                            current.mProcessDialog.setMessage(current.getString(R.string.process_snapshot_changed));
+                        } else {
+                            current.showProcessSnapshot(snapshot, device, roots, monitorRoots.unknownTaskPids, sampledAt, ticksPerSecond, pageSize);
+                        }
+                    }
+                    current.scheduleProcessRefresh();
+                });
+            }, "TermuxProcessSnapshot").start();
+        } catch (RuntimeException e) {
+            busy.set(false);
+            mProcessDialog.setMessage(getString(R.string.process_snapshot_failed));
+            scheduleProcessRefresh();
+        }
+    }
+
+    private void showProcessSnapshot(ProcessSnapshot snapshot, DeviceSnapshot device, java.util.Set<Integer> roots, int unknownTaskPids,
+                                     long sampledAt, long ticksPerSecond, long pageSize) {
+        java.util.Map<Integer, ProcessSnapshot.Entry> previous = new java.util.HashMap<>();
+        if (mPreviousProcessSnapshot != null && roots.equals(mPreviousProcessRoots))
+            for (ProcessSnapshot.Entry entry : mPreviousProcessSnapshot.entries) previous.put(entry.pid, entry);
+        long elapsed = sampledAt - mPreviousProcessSnapshotTime;
+        mPreviousProcessSnapshot = snapshot;
+        mPreviousProcessRoots = roots;
+        mPreviousProcessSnapshotTime = sampledAt;
+        StringBuilder text = new StringBuilder(getString(R.string.process_snapshot_caveat));
+        String unknown = getString(R.string.diagnostics_unknown);
+        String memory = unknown;
+        if (device.totalMemoryBytes != null && device.availableMemoryBytes != null) {
+            Long used = DeviceSnapshot.memoryUsedBytes(device.totalMemoryBytes, device.availableMemoryBytes);
+            if (used != null) memory = getString(R.string.device_memory_amount, used / 1048576, device.totalMemoryBytes / 1048576);
+        }
+        String battery = device.batteryPercent == null ? unknown : getString(R.string.device_battery_amount, device.batteryPercent);
+        String thermal = device.thermalStatus == null ? unknown : thermalStatusLabel(device.thermalStatus);
+        text.append("\n\n").append(getString(R.string.device_memory, memory));
+        if (Boolean.TRUE.equals(device.lowMemory)) text.append("\n").append(getString(R.string.device_low_memory));
+        text.append("\n").append(getString(R.string.device_battery, battery));
+        text.append("\n").append(getString(R.string.device_thermal, thermal));
+        if (snapshot.incomplete || snapshot.missingRoots > 0)
+            text.append("\n\n").append(getString(R.string.process_snapshot_incomplete, snapshot.missingRoots));
+        if (unknownTaskPids > 0) text.append("\n\n").append(getString(R.string.process_snapshot_unknown_tasks, unknownTaskPids));
+        if (snapshot.entries.isEmpty()) text.append("\n\n").append(getString(R.string.process_snapshot_empty));
+        int count = Math.min(snapshot.entries.size(), 100);
+        for (int i = 0; i < count; i++) {
+            ProcessSnapshot.Entry entry = snapshot.entries.get(i);
+            String name = entry.name.substring(0, Math.min(entry.name.length(), 80)).replaceAll("[\\p{Cntrl}]", "?");
+            Long rss = ProcessSnapshot.rssKiB(entry.rssPages, pageSize);
+            Double cpu = ProcessSnapshot.cpuPercent(previous.get(entry.pid), entry, elapsed, ticksPerSecond);
+            String rssText = rss == null ? getString(R.string.diagnostics_unknown) : getString(R.string.process_snapshot_rss, rss);
+            String cpuText = cpu == null ? getString(R.string.diagnostics_unknown) :
+                String.format(java.util.Locale.getDefault(), "%.1f%%", cpu);
+            text.append("\n\n").append(getString(R.string.process_snapshot_entry,
+                entry.pid, entry.ppid, name, String.valueOf(entry.state), rssText, cpuText));
+        }
+        if (snapshot.entries.size() > count) text.append("\n\n").append(getString(R.string.process_snapshot_truncated));
+        if (mProcessDialog != null) mProcessDialog.setMessage(text.toString());
+    }
+
+    private String thermalStatusLabel(int status) {
+        int[] labels = { R.string.thermal_none, R.string.thermal_light, R.string.thermal_moderate,
+            R.string.thermal_severe, R.string.thermal_critical, R.string.thermal_emergency, R.string.thermal_shutdown };
+        return status >= 0 && status < labels.length ? getString(labels[status]) : getString(R.string.diagnostics_unknown);
     }
 
     @Override
