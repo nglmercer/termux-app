@@ -75,6 +75,20 @@
         </activity>
 
         <activity-alias
+            android:name=".app.ShareImageToTerminalActivity"
+            android:exported="true"
+            android:label="@string/share_image_to_terminal"
+            android:targetActivity=".app.TermuxActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!-- Providers may use image/* for a mixed batch; the importer validates each item. -->
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
             android:name=".HomeActivity"
             android:exported="true"
             android:targetActivity=".app.TermuxActivity">
