@@ -132,7 +132,7 @@ static int all_read(int fd, void *buf, size_t n, long long deadline) {
     }
     return 0;
 }
-static int exchange(int fd, const char *request, int id, int hello, const unsigned char *binary, size_t binary_len) {
+static int exchange(int fd, const char *request, int id, int hello, const unsigned char *binary, size_t binary_len, char **response_out) {
     size_t n = strlen(request); unsigned char h[4] = {(unsigned char)(n >> 24), (unsigned char)(n >> 16), (unsigned char)(n >> 8), (unsigned char)n};
     long long now = now_ms();
     if (now < 0) { fprintf(stderr, "termux-control: clock unavailable\n"); return -1; }
@@ -164,8 +164,10 @@ static int exchange(int fd, const char *request, int id, int hello, const unsign
     int result = response_ok(body, id, hello);
     if (result == 0) fprintf(stderr, "termux-control: server error: %s\n", body);
     else if (result < 0) fprintf(stderr, "termux-control: invalid server response\n");
-    else if (!hello) puts(body);
-    free(body); return result == 1 ? 0 : (result == 0 ? 1 : -1);
+    else if (!hello && !response_out) puts(body);
+    if (result == 1 && response_out) *response_out = body;
+    else free(body);
+    return result == 1 ? 0 : (result == 0 ? 1 : -1);
 }
 static int append(char *buf, size_t cap, size_t *used, const char *s) {
     size_t n = strlen(s); if (n >= cap - *used) return -1;
@@ -186,8 +188,72 @@ static int number(const char *s, int min, int max) {
     char *end; errno = 0; long n = strtol(s, &end, 10);
     return !errno && *s && !*end && n >= min && n <= max;
 }
+/* Parse non-negative integer metadata without accepting signs, fractions or overflow. */
+static int unsigned_member(struct span object, const char *name, uint64_t *out) {
+    struct span v;
+    if (member(object, name, &v) != 1 || v.start == v.end) return -1;
+    uint64_t n = 0;
+    for (const char *p = v.start; p < v.end; ++p) {
+        if (*p < '0' || *p > '9' || n > (UINT64_MAX - (unsigned)(*p - '0')) / 10) return -1;
+        n = n * 10 + (unsigned)(*p - '0');
+    }
+    *out = n;
+    return 0;
+}
+
+static int follow_output(int fd, const char *session_id) {
+    uint64_t offset = 0;
+    if (isatty(STDOUT_FILENO))
+        fprintf(stderr, "termux-control: follow from a different session or redirect stdout to avoid an output loop\n");
+    for (;;) {
+        char request[MAX_REQUEST] = ""; size_t used = 0;
+        if (append(request, sizeof(request), &used, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.output.read\",\"params\":{\"id\":") ||
+            quoted(request, sizeof(request), &used, session_id)) return -1;
+        char params[100];
+        snprintf(params, sizeof(params), ",\"offset\":%llu,\"limit\":65536}}", (unsigned long long)offset);
+        if (append(request, sizeof(request), &used, params)) return -1;
+        char *response = NULL;
+        int status = exchange(fd, request, 3, 0, NULL, 0, &response);
+        if (status != 0) { free(response); return status; }
+        const char *end = response;
+        if (!value(&end, 0)) { free(response); return -1; }
+        ws(&end);
+        struct span root = {response, end}, result, gap;
+        uint64_t start, next, latest, length;
+        int valid = member(root, "result", &result) == 1 &&
+            !unsigned_member(result, "offset", &start) && !unsigned_member(result, "nextOffset", &next) &&
+            !unsigned_member(result, "endOffset", &latest) && !unsigned_member(result, "length", &length) &&
+            member(result, "gap", &gap) == 1 && (equals(gap, "true") || equals(gap, "false"));
+        int has_gap = valid && equals(gap, "true");
+        if (!valid || length > MAX_FRAME || latest > INT64_MAX || start < offset || next < start || next - start != length ||
+            next > latest || (!has_gap && start != offset) || (has_gap && start == offset)) {
+            fprintf(stderr, "termux-control: invalid output metadata\n"); free(response); return -1;
+        }
+        free(response);
+        if (has_gap) fprintf(stderr, "termux-control: output gap; older bytes were overwritten\n");
+        if (length) {
+            unsigned char header[4], data[MAX_FRAME];
+            long long now = now_ms();
+            if (now < 0 || all_read(fd, header, sizeof(header), now + 5000)) {
+                fprintf(stderr, "termux-control: incomplete output frame\n"); return -1;
+            }
+            uint32_t size = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) | ((uint32_t)header[2] << 8) | header[3];
+            if (size != length || all_read(fd, data, size, now + 5000)) {
+                fprintf(stderr, "termux-control: invalid or incomplete output frame\n"); return -1;
+            }
+            if (fwrite(data, 1, size, stdout) != size || fflush(stdout)) {
+                fprintf(stderr, "termux-control: cannot write output\n"); return -1;
+            }
+        } else {
+            struct timespec delay = { .tv_sec = 0, .tv_nsec = 250000000 };
+            while (nanosleep(&delay, &delay) && errno == EINTR) { }
+        }
+        offset = next;
+    }
+}
+
 static void usage(void) {
-    fprintf(stderr, "Usage: termux-control [--socket PATH] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE\n");
+    fprintf(stderr, "Usage: termux-control [--socket PATH] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE|follow ID\n");
 }
 int main(int argc, char **argv) {
     const char *path = getenv("TERMUX_CONTROL_SOCKET"); char default_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -210,6 +276,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "resize") && count == 3 && number(argv[i + 1], 2, 500) && number(argv[i + 2], 2, 250)) method = "session.resize";
     else if (!strcmp(cmd, "close") && count == 1) method = "session.close";
     else if (!strcmp(cmd, "write") && count == 1) method = "session.write";
+    else if (!strcmp(cmd, "follow") && count == 1) method = "session.output.subscribe";
     else { usage(); return 2; }
     unsigned char binary[MAX_FRAME + 1];
     size_t binary_len = 0;
@@ -221,7 +288,7 @@ int main(int argc, char **argv) {
         }
     }
     if (append(req, sizeof(req), &used, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":") || quoted(req, sizeof(req), &used, method) || append(req, sizeof(req), &used, ",\"params\":{")) goto too_long;
-    if (!strcmp(cmd, "rename") || !strcmp(cmd, "resize") || !strcmp(cmd, "close") || !strcmp(cmd, "write")) {
+    if (!strcmp(cmd, "rename") || !strcmp(cmd, "resize") || !strcmp(cmd, "close") || !strcmp(cmd, "write") || !strcmp(cmd, "follow")) {
         if (append(req, sizeof(req), &used, "\"id\":") || quoted(req, sizeof(req), &used, argv[i])) goto too_long;
     }
     if (!strcmp(cmd, "write")) {
@@ -258,10 +325,28 @@ int main(int argc, char **argv) {
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) || peer_size != sizeof(peer) || peer.uid != getuid()) {
         fprintf(stderr, "termux-control: socket peer is not the current UID\n"); close(fd); return 1;
     }
-    int handshake = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}", 1, 1, NULL, 0);
+    int handshake = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}", 1, 1, NULL, 0, NULL);
     if (handshake != 0) { close(fd); return 1; }
-    int result = exchange(fd, req, 2, 0, binary_len ? binary : NULL, binary_len);
-    if (result < 0 && strcmp(cmd, "list") && strcmp(cmd, "capabilities"))
+    int result;
+    if (!strcmp(cmd, "follow")) {
+        char *response = NULL;
+        result = exchange(fd, req, 2, 0, NULL, 0, &response);
+        if (result == 0) {
+            const char *end = response;
+            struct span root = {response, NULL}, object, ok;
+            if (!value(&end, 0)) result = -1;
+            else {
+                ws(&end); root.end = end;
+                if (member(root, "result", &object) != 1 || member(object, "ok", &ok) != 1 || !equals(ok, "true")) result = -1;
+            }
+            if (result != 0) fprintf(stderr, "termux-control: invalid subscription response\n");
+        }
+        free(response);
+        if (result == 0) result = follow_output(fd, argv[i]);
+    } else {
+        result = exchange(fd, req, 2, 0, binary_len ? binary : NULL, binary_len, NULL);
+    }
+    if (result < 0 && strcmp(cmd, "list") && strcmp(cmd, "capabilities") && strcmp(cmd, "follow"))
         fprintf(stderr, "termux-control: request outcome may be unknown; inspect session state before retrying\n");
     close(fd); return result == 0 ? 0 : 1;
 too_long:
