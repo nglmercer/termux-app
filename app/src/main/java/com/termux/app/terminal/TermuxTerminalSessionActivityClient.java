@@ -74,6 +74,9 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             termuxSessionListNotifyUpdated();
         }
 
+        // Restore the visible terminal geometry after a background control resize.
+        TerminalSession current = mActivity.getCurrentSession();
+        if (current != null && current.getPid() > 0) mActivity.getTerminalView().updateSize();
         // The current terminal session may have changed while being away, force
         // a refresh of the displayed terminal.
         mActivity.getTerminalView().onScreenUpdated();
@@ -296,6 +299,11 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
     }
 
 
+
+    /** Whether the activity currently displays this session. Called on the main thread. */
+    public boolean isSessionVisible(TerminalSession session) {
+        return mActivity.isVisible() && mActivity.getCurrentSession() == session;
+    }
 
     /** Try switching to session. */
     public void setCurrentSession(TerminalSession session) {

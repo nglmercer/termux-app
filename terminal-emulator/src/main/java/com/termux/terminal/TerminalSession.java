@@ -68,6 +68,15 @@ public final class TerminalSession extends TerminalOutput {
      * {@link JNI#createSubprocess(String, String, String[], String[], int[], int, int, int, int)}.
      */
     private int mTerminalFileDescriptor;
+    /** Optional pidfd for identity-safe signalling; owned by the main thread. */
+    private int mProcessHandle = -1;
+    private static volatile boolean sProcessHandlesEnabled;
+
+    /** Opt-in for newly created sessions; existing sessions do not gain a process handle. */
+    public static void setProcessHandlesEnabled(boolean enabled) {
+        sProcessHandlesEnabled = enabled;
+    }
+
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
 
@@ -137,6 +146,8 @@ public final class TerminalSession extends TerminalOutput {
             throw e;
         }
         mShellPid = processId[0];
+        // Open before the waiter starts reaping the child. Unsupported kernels return a negative errno.
+        if (mShellPid > 0 && sProcessHandlesEnabled) mProcessHandle = JNI.openProcessHandle(mShellPid);
 
         final FileDescriptor terminalFileDescriptorWrapped = wrapFileDescriptor(mTerminalFileDescriptor, mClient);
 
@@ -278,6 +289,21 @@ public final class TerminalSession extends TerminalOutput {
         }
     }
 
+    /** Signal the original process via pidfd, returning zero or a negative errno.
+     * Must be called on the emulator/main thread, like cleanupResources().
+     */
+    public int killUsingProcessHandle() {
+        if (mShellPid <= 0) return -OsConstants.ESRCH;
+        if (mProcessHandle < 0) return -OsConstants.ENOSYS;
+        return JNI.signalProcessHandle(mProcessHandle, OsConstants.SIGKILL);
+    }
+
+    /** Release an optional process handle on the emulator/main thread. */
+    public void releaseProcessHandle() {
+        if (mProcessHandle >= 0) JNI.close(mProcessHandle);
+        mProcessHandle = -1;
+    }
+
     /** Cleanup resources when the process exits. */
     void cleanupResources(int exitStatus) {
         synchronized (this) {
@@ -288,6 +314,7 @@ public final class TerminalSession extends TerminalOutput {
         // Stop the reader and writer threads, and close the I/O streams
         mTerminalToProcessIOQueue.close();
         mProcessToTerminalIOQueue.close();
+        releaseProcessHandle();
         JNI.close(mTerminalFileDescriptor);
     }
 

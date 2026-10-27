@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <errno.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <jni.h>
 #include <limits.h>
@@ -228,6 +229,27 @@ JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_waitFor(JNIEnv* TERMUX_UNUSE
         // Should never happen - waitpid(2) says "One of the first three macros will evaluate to a non-zero (true) value".
         return 0;
     }
+}
+
+/* A pidfd refers to the original process even after its numeric PID is reused. */
+JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_openProcessHandle(JNIEnv* TERMUX_UNUSED(env), jclass TERMUX_UNUSED(clazz), jint pid)
+{
+#if defined(__NR_pidfd_open)
+    int fd = (int) syscall(__NR_pidfd_open, pid, 0);
+    return fd < 0 ? -errno : fd;
+#else
+    return -ENOSYS;
+#endif
+}
+
+JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_signalProcessHandle(JNIEnv* TERMUX_UNUSED(env), jclass TERMUX_UNUSED(clazz), jint fd, jint signal_number)
+{
+#if defined(__NR_pidfd_send_signal)
+    int result = (int) syscall(__NR_pidfd_send_signal, fd, signal_number, NULL, 0);
+    return result < 0 ? -errno : 0;
+#else
+    return -ENOSYS;
+#endif
 }
 
 JNIEXPORT void JNICALL Java_com_termux_terminal_JNI_close(JNIEnv* TERMUX_UNUSED(env), jclass TERMUX_UNUSED(clazz), jint fileDescriptor)
