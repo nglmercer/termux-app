@@ -30,3 +30,9 @@ The local socket is at `files/control-ipc/control.sock` under the app private di
 A native `tools/termux-control` client prototype negotiates the protocol, verifies the socket peer UID, bounds frames and deadlines, and exposes the current metadata operations. Its mock-socket tests run on the host; it is not packaged into `$PREFIX/bin` and supports bounded binary input but not terminal attachment or output streaming. See its README for build and packaging limits.
 
 A `session.write` request has named `id` and `length` parameters. After the metadata frame, the client sends one separate big-endian length-prefixed binary frame of exactly that length (1–65536 bytes), then receives the JSON-RPC response. Negotiation, scope and metadata are checked before reading the binary frame; a denied or malformed request closes the connection. No byte is added or interpreted as an Enter key by the client or server. The protocol loop is tested with simulated streams, and a host Unix socket test exercises the native client against the Java loop. Neither validates Android LocalSocket credentials or a live PTY.
+
+## Opt-in output replay foundation
+
+A session can allocate a 256 KiB in-memory raw PTY output ring through a trusted in-process call. It is disabled by default, stores only output observed after opt-in, overwrites oldest bytes when full, and reports an offset gap to readers. Reads return at most 64 KiB and never wait for additional output. Disabling replay or ending the session revokes readers and clears the ring. Output can include secrets; a transport must enforce a separate, explicit transcript scope before exposing it.
+
+There is no RPC method, subscriber lifecycle or client for this buffer yet. It is not a terminal screen snapshot and cannot reconstruct pre-attachment history or provide lossless replay after a gap. Unit tests cover ring behavior, not Android PTY concurrency or an actual socket.

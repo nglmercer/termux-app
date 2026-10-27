@@ -82,6 +82,8 @@ public final class TerminalSession extends TerminalOutput {
 
     final Handler mMainThreadHandler = new MainThreadHandler();
     private final AtomicBoolean mInputRejectionPending = new AtomicBoolean();
+    // Only allocated after an explicit trusted opt-in; the reader thread publishes raw PTY bytes.
+    private volatile OutputReplayBuffer mOutputReplay;
 
     private final String mShellPath;
     private final String mCwd;
@@ -160,6 +162,8 @@ public final class TerminalSession extends TerminalOutput {
                         int read = termIn.read(buffer);
                         if (read == -1) return;
                         if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
+                        OutputReplayBuffer replay = mOutputReplay;
+                        if (replay != null) replay.append(buffer, 0, read);
                         mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
                     }
                 } catch (Exception e) {
@@ -197,6 +201,20 @@ public final class TerminalSession extends TerminalOutput {
         // Start I/O and the waiter before notifying clients, so a client callback
         // failure cannot leave a spawned process without a waiter.
         mClient.setTerminalShellPid(this, mShellPid);
+    }
+
+    /** Enable bounded raw output replay for a live session; caller must enforce authorization. */
+    public synchronized OutputReplayBuffer enableOutputReplay() {
+        if (mShellPid <= 0) throw new IllegalStateException("Session is not running");
+        if (mOutputReplay == null) mOutputReplay = new OutputReplayBuffer(OutputReplayBuffer.MAX_CAPACITY);
+        return mOutputReplay;
+    }
+
+    /** Revoke replay for all readers and erase its buffer. */
+    public synchronized void disableOutputReplay() {
+        OutputReplayBuffer replay = mOutputReplay;
+        mOutputReplay = null;
+        if (replay != null) replay.close();
     }
 
     /** Write data to the shell process. */
@@ -312,6 +330,7 @@ public final class TerminalSession extends TerminalOutput {
         }
 
         // Stop the reader and writer threads, and close the I/O streams
+        disableOutputReplay();
         mTerminalToProcessIOQueue.close();
         mProcessToTerminalIOQueue.close();
         releaseProcessHandle();
