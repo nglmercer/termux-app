@@ -1,6 +1,8 @@
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +50,7 @@ static int create_subprocess(JNIEnv* env,
             ptsname_r(ptm, devname, sizeof(devname))
 #endif
        ) {
+        close(ptm);
         return throw_runtime_exception(env, "Cannot grantpt()/unlockpt()/ptsname_r() on /dev/ptmx");
     }
 
@@ -64,6 +67,7 @@ static int create_subprocess(JNIEnv* env,
 
     pid_t pid = fork();
     if (pid < 0) {
+        close(ptm);
         return throw_runtime_exception(env, "Fork failed");
     } else if (pid > 0) {
         *pProcessId = (int) pid;
@@ -127,6 +131,8 @@ JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_createSubprocess(
         jint cell_width,
         jint cell_height)
 {
+    if (!processIdArray || (*env)->GetArrayLength(env, processIdArray) < 1)
+        return throw_runtime_exception(env, "processIdArray must have at least one element");
     jsize size = args ? (*env)->GetArrayLength(env, args) : 0;
     char** argv = NULL;
     if (size > 0) {
@@ -173,12 +179,20 @@ JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_createSubprocess(
         free(envp);
     }
 
-    int* pProcId = (int*) (*env)->GetPrimitiveArrayCritical(env, processIdArray, NULL);
-    if (!pProcId) return throw_runtime_exception(env, "JNI call GetPrimitiveArrayCritical(processIdArray, &isCopy) failed");
+    // create_subprocess already raised a Java exception on failure. Do not invoke
+    // further JNI operations with that exception pending.
+    if (ptm < 0) return -1;
 
-    *pProcId = procId;
-    (*env)->ReleasePrimitiveArrayCritical(env, processIdArray, pProcId, 0);
-
+    jint pid_value = procId;
+    (*env)->SetIntArrayRegion(env, processIdArray, 0, 1, &pid_value);
+    if ((*env)->ExceptionCheck(env)) {
+        // The caller cannot own this child if its PID cannot be returned. The
+        // session waiter has not started, so terminate and reap the child here.
+        kill(procId, SIGKILL);
+        while (waitpid(procId, NULL, 0) < 0 && errno == EINTR) { }
+        close(ptm);
+        return -1;
+    }
     return ptm;
 }
 
@@ -201,7 +215,11 @@ JNIEXPORT void JNICALL Java_com_termux_terminal_JNI_setPtyUTF8Mode(JNIEnv* TERMU
 JNIEXPORT jint JNICALL Java_com_termux_terminal_JNI_waitFor(JNIEnv* TERMUX_UNUSED(env), jclass TERMUX_UNUSED(clazz), jint pid)
 {
     int status;
-    waitpid(pid, &status, 0);
+    pid_t result;
+    do {
+        result = waitpid(pid, &status, 0);
+    } while (result < 0 && errno == EINTR);
+    if (result < 0) return INT_MIN;
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status);
     } else if (WIFSIGNALED(status)) {

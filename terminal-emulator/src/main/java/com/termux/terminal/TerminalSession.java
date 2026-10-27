@@ -30,6 +30,9 @@ import java.util.UUID;
  */
 public final class TerminalSession extends TerminalOutput {
 
+    /** waitpid failed, so no process exit status is available. */
+    public static final int EXIT_STATUS_UNKNOWN = Integer.MIN_VALUE;
+
     private static final int MSG_NEW_INPUT = 1;
     private static final int MSG_PROCESS_EXITED = 4;
 
@@ -124,9 +127,14 @@ public final class TerminalSession extends TerminalOutput {
         mEmulator = new TerminalEmulator(this, columns, rows, cellWidthPixels, cellHeightPixels, mTranscriptRows, mClient);
 
         int[] processId = new int[1];
-        mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
+        try {
+            mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
+        } catch (RuntimeException | Error e) {
+            // A later updateSize must retry initialization, not resize descriptor 0.
+            mEmulator = null;
+            throw e;
+        }
         mShellPid = processId[0];
-        mClient.setTerminalShellPid(this, mShellPid);
 
         final FileDescriptor terminalFileDescriptorWrapped = wrapFileDescriptor(mTerminalFileDescriptor, mClient);
 
@@ -171,6 +179,9 @@ public final class TerminalSession extends TerminalOutput {
             }
         }.start();
 
+        // Start I/O and the waiter before notifying clients so a client callback
+        // failure cannot leave a spawned process without a waiter.
+        mClient.setTerminalShellPid(this, mShellPid);
     }
 
     /** Write data to the shell process. */
@@ -233,9 +244,11 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Finish this terminal session by sending SIGKILL to the shell. */
     public void finishIfRunning() {
-        if (isRunning()) {
+        // PID zero refers to the caller's process group, not an unstarted shell.
+        final int pid = mShellPid;
+        if (pid > 0) {
             try {
-                Os.kill(mShellPid, OsConstants.SIGKILL);
+                Os.kill(pid, OsConstants.SIGKILL);
             } catch (ErrnoException e) {
                 Logger.logWarn(mClient, LOG_TAG, "Failed sending SIGKILL: " + e.getMessage());
             }
@@ -264,7 +277,7 @@ public final class TerminalSession extends TerminalOutput {
         return mShellPid != -1;
     }
 
-    /** Only valid if not {@link #isRunning()}. */
+    /** Only valid if not {@link #isRunning()}; may be {@link #EXIT_STATUS_UNKNOWN}. */
     public synchronized int getExitStatus() {
         return mShellExitStatus;
     }
@@ -351,7 +364,9 @@ public final class TerminalSession extends TerminalOutput {
                 cleanupResources(exitCode);
 
                 String exitDescription = "\r\n[Process completed";
-                if (exitCode > 0) {
+                if (exitCode == EXIT_STATUS_UNKNOWN) {
+                    exitDescription += " (status unavailable)";
+                } else if (exitCode > 0) {
                     // Non-zero process exit.
                     exitDescription += " (code " + exitCode + ")";
                 } else if (exitCode < 0) {

@@ -31,7 +31,7 @@ final class JNI {
     /**
      * Causes the calling thread to wait for the process associated with the receiver to finish executing.
      *
-     * @return if >= 0, the exit status of the process. If < 0, the signal causing the process to stop negated.
+     * @return exit status, negative terminating signal, or {@link Integer#MIN_VALUE} on wait failure.
      */
     public static native int waitFor(int processId);
 
