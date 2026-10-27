@@ -16,6 +16,7 @@ import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A terminal session, consisting of a process coupled to a terminal interface.
@@ -49,7 +50,7 @@ public final class TerminalSession extends TerminalOutput {
      * A queue written to from the main thread due to user interaction, and read by another thread which forwards by
      * writing to the {@link #mTerminalFileDescriptor}.
      */
-    final ByteQueue mTerminalToProcessIOQueue = new ByteQueue(4096);
+    final TerminalInputQueue mTerminalToProcessIOQueue = new TerminalInputQueue(1024 * 1024, 4096);
     /** Buffer to write translate code points into utf8 before writing to mTerminalToProcessIOQueue */
     private final byte[] mUtf8InputBuffer = new byte[5];
 
@@ -67,11 +68,11 @@ public final class TerminalSession extends TerminalOutput {
      * {@link JNI#createSubprocess(String, String, String[], String[], int[], int, int, int, int)}.
      */
     private int mTerminalFileDescriptor;
-
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
 
     final Handler mMainThreadHandler = new MainThreadHandler();
+    private final AtomicBoolean mInputRejectionPending = new AtomicBoolean();
 
     private final String mShellPath;
     private final String mCwd;
@@ -130,7 +131,8 @@ public final class TerminalSession extends TerminalOutput {
         try {
             mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
         } catch (RuntimeException | Error e) {
-            // A later updateSize must retry initialization, not resize descriptor 0.
+            // No PTY was returned. A later updateSize must retry initialization,
+            // not resize the default descriptor 0.
             mEmulator = null;
             throw e;
         }
@@ -161,12 +163,14 @@ public final class TerminalSession extends TerminalOutput {
                 final byte[] buffer = new byte[4096];
                 try (FileOutputStream termOut = new FileOutputStream(terminalFileDescriptorWrapped)) {
                     while (true) {
-                        int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
+                        int bytesToWrite = mTerminalToProcessIOQueue.read(buffer);
                         if (bytesToWrite == -1) return;
                         termOut.write(buffer, 0, bytesToWrite);
                     }
                 } catch (IOException e) {
-                    // Ignore.
+                    // The PTY is no longer writable. Reject subsequent input.
+                } finally {
+                    mTerminalToProcessIOQueue.close();
                 }
             }
         }.start();
@@ -179,7 +183,7 @@ public final class TerminalSession extends TerminalOutput {
             }
         }.start();
 
-        // Start I/O and the waiter before notifying clients so a client callback
+        // Start I/O and the waiter before notifying clients, so a client callback
         // failure cannot leave a spawned process without a waiter.
         mClient.setTerminalShellPid(this, mShellPid);
     }
@@ -187,7 +191,25 @@ public final class TerminalSession extends TerminalOutput {
     /** Write data to the shell process. */
     @Override
     public void write(byte[] data, int offset, int count) {
-        if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);
+        tryWrite(data, offset, count);
+    }
+
+    @Override
+    public boolean tryWrite(byte[] data, int offset, int count) {
+        return tryWriteInput(data, offset, count, false);
+    }
+
+    private boolean tryWriteInput(byte[] data, int offset, int count, boolean interactive) {
+        if (mShellPid <= 0) return false;
+        if (interactive ? mTerminalToProcessIOQueue.offerInteractive(data, offset, count) :
+            mTerminalToProcessIOQueue.offer(data, offset, count)) return true;
+        if (mInputRejectionPending.compareAndSet(false, true)) {
+            mMainThreadHandler.post(() -> {
+                mInputRejectionPending.set(false);
+                mClient.onTerminalInputRejected(this);
+            });
+        }
+        return false;
     }
 
     /** Write the Unicode code point to the terminal encoded in UTF-8. */
@@ -224,7 +246,7 @@ public final class TerminalSession extends TerminalOutput {
             /* 10xxxxxx continuation byte with following 6 bits */
             mUtf8InputBuffer[bufferPosition++] = (byte) (0b10000000 | (codePoint & 0b111111));
         }
-        write(mUtf8InputBuffer, 0, bufferPosition);
+        tryWriteInput(mUtf8InputBuffer, 0, bufferPosition, true);
     }
 
     public TerminalEmulator getEmulator() {
@@ -244,7 +266,8 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Finish this terminal session by sending SIGKILL to the shell. */
     public void finishIfRunning() {
-        // PID zero refers to the caller's process group, not an unstarted shell.
+        // A session is considered running before its PTY is initialized, when the PID is 0.
+        // kill(0, ...) targets a process group, so never pass an uninitialized PID.
         final int pid = mShellPid;
         if (pid > 0) {
             try {

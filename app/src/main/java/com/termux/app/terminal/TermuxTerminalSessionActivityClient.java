@@ -191,9 +191,17 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
     public void onPasteTextFromClipboard(@Nullable TerminalSession session) {
         if (!mActivity.isVisible()) return;
 
+        TerminalSession target = session != null ? session : mActivity.getCurrentSession();
+        if (target == null || !target.isRunning() || target.getEmulator() == null) return;
         String text = ShareUtils.getTextStringFromClipboardIfSet(mActivity, true);
-        if (text != null)
-            mActivity.getTerminalView().mEmulator.paste(text);
+        if (text != null) target.getEmulator().paste(text);
+    }
+
+    @Override
+    public void onTerminalInputRejected(@NonNull TerminalSession session) {
+        logWarn("TerminalSession", "Terminal input rejected: queue full or closed");
+        if (mActivity.isVisible())
+            mActivity.showToast(mActivity.getString(R.string.terminal_input_queue_full), true);
     }
 
     @Override

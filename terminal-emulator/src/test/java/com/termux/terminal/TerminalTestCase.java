@@ -18,6 +18,14 @@ public abstract class TerminalTestCase extends TestCase {
 
     public static class MockTerminalOutput extends TerminalOutput {
 		final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		int writes;
+		boolean rejectWrites;
+
+		@Override
+		public boolean tryWrite(byte[] data, int offset, int count) {
+			if (rejectWrites) return false;
+			return super.tryWrite(data, offset, count);
+		}
 		public final List<ChangedTitle> titleChanges = new ArrayList<>();
 		public final List<String> clipboardPuts = new ArrayList<>();
 		public int bellsRung = 0;
@@ -25,6 +33,7 @@ public abstract class TerminalTestCase extends TestCase {
 
 		@Override
 		public void write(byte[] data, int offset, int count) {
+			writes++;
 			baos.write(data, offset, count);
 		}
 

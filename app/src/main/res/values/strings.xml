@@ -235,4 +235,5 @@
     <!-- Donate Preference -->
     <string name="donate_preference_title">Donate</string>
 
+    <string name="terminal_input_queue_full">Terminal input was not sent. The input buffer is full or the session is closed. Wait and try again.</string>
 </resources>
