@@ -35,6 +35,7 @@ public final class LocalControlServer implements AutoCloseable {
     private final Context mContext;
     private final StopListener mStopListener;
     private final ControlCore mCore;
+    private final com.termux.app.control.OutputSubscriptions mOutputRegistry;
     private final ServiceThreadDispatch mDispatch;
     private final Set<ControlCore.Scope> mScopes;
     private final Set<LocalSocket> mClients = Collections.synchronizedSet(new HashSet<>());
@@ -50,11 +51,13 @@ public final class LocalControlServer implements AutoCloseable {
 
     /** Scopes must come from an explicit trusted local configuration, not a client request. */
     public LocalControlServer(Context context, ControlCore core, ServiceThreadDispatch dispatch,
-                              Set<ControlCore.Scope> scopes, StopListener stopListener) {
+                              Set<ControlCore.Scope> scopes, StopListener stopListener,
+                              com.termux.app.control.OutputSubscriptions outputRegistry) {
         if (context == null || core == null || dispatch == null || scopes == null)
             throw new IllegalArgumentException("Missing server configuration");
         mContext = context.getApplicationContext();
         mStopListener = stopListener;
+        mOutputRegistry = outputRegistry;
         mCore = core;
         mDispatch = dispatch;
         mScopes = Collections.unmodifiableSet(scopes.isEmpty() ? EnumSet.noneOf(ControlCore.Scope.class) : EnumSet.copyOf(scopes));
@@ -111,6 +114,8 @@ public final class LocalControlServer implements AutoCloseable {
 
     public boolean allowsSessionWrite() { return mScopes.contains(ControlCore.Scope.SESSIONS_WRITE); }
 
+    public boolean allowsOutput() { return mScopes.contains(ControlCore.Scope.SESSIONS_OUTPUT); }
+
     private void acceptLoop() {
         try {
             while (isRunning()) {
@@ -139,7 +144,7 @@ public final class LocalControlServer implements AutoCloseable {
             Os.setsockoptTimeval(client.getFileDescriptor(), OsConstants.SOL_SOCKET, OsConstants.SO_SNDTIMEO,
                 StructTimeval.fromMillis(IDLE_TIMEOUT_MS));
             InputStream input = new DeadlineInput(client, client.getInputStream(), SystemClock.elapsedRealtime() + CONNECTION_LIFETIME_MS);
-            RpcConnection connection = new RpcConnection(mCore, mDispatch, mScopes, this::isRunning);
+            RpcConnection connection = new RpcConnection(mCore, mDispatch, mScopes, this::isRunning, mOutputRegistry);
             connection.serve(Process.myUid(), peerUid, input, client.getOutputStream());
         } catch (IOException | ErrnoException | RuntimeException ignored) {
             // Never log peer requests, session content, or provider paths.
