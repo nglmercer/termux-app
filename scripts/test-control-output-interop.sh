@@ -10,3 +10,6 @@ out_dir="$project_dir/build/control-output-interop"
 mkdir -p "$out_dir/classes" "$out_dir/tmp"
 javac -cp "$app_classes:$terminal_classes:$GSON_JAR" -d "$out_dir/classes" app/src/test/host/com/termux/app/control/ipc/HostOutputSocketSmoke.java
 python tools/termux-control/test-output-interop.py "$out_dir/classes:$app_classes:$terminal_classes:$GSON_JAR" "$out_dir/tmp"
+
+clang -std=c11 -O2 -Wall -Wextra -Werror tools/termux-control/termux-control.c -o "$out_dir/termux-control"
+python tools/termux-control/test-follow-host.py "$out_dir/classes:$app_classes:$terminal_classes:$GSON_JAR" "$out_dir/tmp" "$out_dir/termux-control"

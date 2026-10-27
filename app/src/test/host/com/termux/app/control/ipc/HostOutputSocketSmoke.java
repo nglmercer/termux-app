@@ -45,7 +45,8 @@ public final class HostOutputSocketSmoke {
                 RpcConnection connection = new RpcConnection(new ControlCore(backend),
                     new ServiceThreadDispatch(Runnable::run, () -> false, 4),
                     EnumSet.of(ControlCore.Scope.SESSIONS_OUTPUT), () -> true, registry);
-                connection.serve(1000, 1000, Channels.newInputStream(peer), Channels.newOutputStream(peer));
+                try { connection.serve(1000, 1000, Channels.newInputStream(peer), Channels.newOutputStream(peer)); }
+                catch (java.io.IOException ignored) { /* A client may disconnect during a reply. */ }
             }
             if (closed.get() != 1) throw new AssertionError("Subscription not released");
         } finally { Files.deleteIfExists(path); }
