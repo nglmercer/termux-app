@@ -98,6 +98,8 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
      */
     private TermuxShellManager mShellManager;
     private com.termux.app.control.ControlCore mControlCore;
+    private com.termux.app.control.ipc.ServiceThreadDispatch mControlDispatch;
+    private volatile com.termux.app.control.ipc.LocalControlServer mLocalControlServer;
     private boolean mControlAvailable;
     private boolean mSafeControlCloseEnabled;
 
@@ -121,6 +123,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         mShellManager = TermuxShellManager.getShellManager();
         TerminalSession.setProcessHandlesEnabled(false);
         mControlCore = new com.termux.app.control.ControlCore(new com.termux.app.control.TermuxControlBackend(this));
+        android.os.Handler controlHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        mControlDispatch = new com.termux.app.control.ipc.ServiceThreadDispatch(task -> {
+            if (!controlHandler.post(task)) throw new java.util.concurrent.RejectedExecutionException();
+        }, () -> android.os.Looper.myLooper() == android.os.Looper.getMainLooper(), 20);
         mControlAvailable = true;
 
         runStartForeground();
@@ -174,6 +180,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     @Override
     public void onDestroy() {
         Logger.logVerbose(LOG_TAG, "onDestroy");
+        stopLocalControl();
         if (mControlAvailable) setSafeControlCloseEnabled(false);
         else TerminalSession.setProcessHandlesEnabled(false);
         mControlAvailable = false;
@@ -886,7 +893,63 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     /** In-process core; callers must establish authorization independently. */
     public com.termux.app.control.ControlCore getControlCore() { return mControlCore; }
 
+    /** For bounded background-to-main handoff; this does not start a listener. */
+    public com.termux.app.control.ipc.ServiceThreadDispatch getControlDispatch() { return mControlDispatch; }
+
     public boolean isControlAvailable() { return mControlAvailable; }
+
+    public interface LocalControlStartCallback { void onResult(boolean started); }
+
+    /** Explicit in-process opt-in. Scopes must be selected by a trusted local caller. */
+    public boolean startLocalControl(java.util.Set<com.termux.app.control.ControlCore.Scope> scopes,
+                                     LocalControlStartCallback callback) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
+            throw new IllegalStateException("Control service unavailable on this thread");
+        if (scopes == null || mLocalControlServer != null) return false;
+        com.termux.app.control.ipc.LocalControlServer server =
+            new com.termux.app.control.ipc.LocalControlServer(this, mControlCore, mControlDispatch, scopes, stopped ->
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    if (mLocalControlServer == stopped) mLocalControlServer = null;
+                }));
+        mLocalControlServer = server;
+        new Thread(() -> {
+            try {
+                server.start();
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    if (mLocalControlServer == server && callback != null) callback.onResult(server.isRunning());
+                });
+            } catch (java.io.IOException | RuntimeException e) {
+                Logger.logWarn(LOG_TAG, "Local control socket could not start");
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    if (mLocalControlServer == server && callback != null) callback.onResult(false);
+                });
+                server.requestStop();
+            }
+        }, "TermuxControlStart").start();
+        return true;
+    }
+
+    /** Stops accepting work immediately; descriptor cleanup runs on a worker. */
+    public void stopLocalControl() {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+            throw new IllegalStateException("Control service stop must run on the main thread");
+        com.termux.app.control.ipc.LocalControlServer server = mLocalControlServer;
+        if (server != null) server.requestStop();
+    }
+
+    public boolean hasLocalControl() { return mLocalControlServer != null; }
+
+    public boolean isLocalControlRunning() {
+        return mLocalControlServer != null && mLocalControlServer.isRunning();
+    }
+
+    public boolean isLocalControlStopping() {
+        return mLocalControlServer != null && mLocalControlServer.isStopping();
+    }
+
+    public boolean localControlAllowsSessionWrite() {
+        return mLocalControlServer != null && mLocalControlServer.allowsSessionWrite();
+    }
 
     /** Local opt-in for new sessions; no remote caller may grant itself this setting. */
     public void setSafeControlCloseEnabled(boolean enabled) {
