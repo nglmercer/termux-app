@@ -98,6 +98,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
      */
     private TermuxShellManager mShellManager;
     private com.termux.app.control.ControlCore mControlCore;
+    private com.termux.app.control.OutputSubscriptions mOutputSubscriptions;
     private com.termux.app.control.ipc.ServiceThreadDispatch mControlDispatch;
     private volatile com.termux.app.control.ipc.LocalControlServer mLocalControlServer;
     private boolean mControlAvailable;
@@ -123,6 +124,19 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         mShellManager = TermuxShellManager.getShellManager();
         TerminalSession.setProcessHandlesEnabled(false);
         mControlCore = new com.termux.app.control.ControlCore(new com.termux.app.control.TermuxControlBackend(this));
+        mOutputSubscriptions = new com.termux.app.control.OutputSubscriptions(
+            () -> android.os.Looper.myLooper() == android.os.Looper.getMainLooper(), id -> {
+                TerminalSession session = getTerminalSessionForHandle(id);
+                if (session == null) throw new com.termux.app.control.ControlCore.ControlException(com.termux.app.control.ControlCore.Error.NOT_FOUND);
+                if (session.getPid() <= 0) throw new com.termux.app.control.ControlCore.ControlException(com.termux.app.control.ControlCore.Error.NOT_RUNNING);
+                final com.termux.terminal.OutputReplayBuffer buffer;
+                try { buffer = session.enableOutputReplay(); }
+                catch (IllegalStateException e) { throw new com.termux.app.control.ControlCore.ControlException(com.termux.app.control.ControlCore.Error.NOT_RUNNING); }
+                return new com.termux.app.control.OutputSubscriptions.Source() {
+                    @Override public com.termux.terminal.OutputReplayBuffer buffer() { return buffer; }
+                    @Override public void close() { session.disableOutputReplay(); }
+                };
+            });
         android.os.Handler controlHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         mControlDispatch = new com.termux.app.control.ipc.ServiceThreadDispatch(task -> {
             if (!controlHandler.post(task)) throw new java.util.concurrent.RejectedExecutionException();
@@ -181,6 +195,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     public void onDestroy() {
         Logger.logVerbose(LOG_TAG, "onDestroy");
         stopLocalControl();
+        if (mOutputSubscriptions != null) mOutputSubscriptions.close();
         if (mControlAvailable) setSafeControlCloseEnabled(false);
         else TerminalSession.setProcessHandlesEnabled(false);
         mControlAvailable = false;
@@ -892,6 +907,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
     /** In-process core; callers must establish authorization independently. */
     public com.termux.app.control.ControlCore getControlCore() { return mControlCore; }
+
+    /** Trusted callers must derive output scopes from their own authentication. */
+    public com.termux.app.control.OutputSubscriptions getOutputSubscriptions() { return mOutputSubscriptions; }
 
     /** For bounded background-to-main handoff; this does not start a listener. */
     public com.termux.app.control.ipc.ServiceThreadDispatch getControlDispatch() { return mControlDispatch; }

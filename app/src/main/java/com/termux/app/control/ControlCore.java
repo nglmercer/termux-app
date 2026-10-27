@@ -10,7 +10,7 @@ public final class ControlCore {
     public static final int PROTOCOL_VERSION = 1;
     public static final int MAX_WRITE_BYTES = 64 * 1024;
 
-    public enum Scope { SESSIONS_READ, SESSIONS_WRITE }
+    public enum Scope { SESSIONS_READ, SESSIONS_WRITE, SESSIONS_OUTPUT }
     public enum State { STARTING, RUNNING, EXITED }
     public enum Error { DENIED, INVALID_REQUEST, NOT_FOUND, NOT_RUNNING, BACKPRESSURE, CONFLICT, LIMIT_REACHED, UNAVAILABLE }
 
