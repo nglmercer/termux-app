@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Environment;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -73,6 +74,12 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     public TermuxTerminalViewClient(TermuxActivity activity, TermuxTerminalSessionActivityClient termuxTerminalSessionActivityClient) {
         this.mActivity = activity;
         this.mTermuxTerminalSessionActivityClient = termuxTerminalSessionActivityClient;
+    }
+
+    @Override
+    public boolean onImeImage(Uri uri, TerminalSession session, Runnable releasePermission) {
+        if (!mActivity.isVisible() || session != mActivity.getCurrentSession() || !session.isRunning()) return false;
+        return mTermuxTerminalSessionActivityClient.importClipboardImages(session, Collections.singletonList(uri), releasePermission);
     }
 
     public TermuxActivity getActivity() {

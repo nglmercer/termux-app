@@ -1,0 +1,9 @@
+# Image import (draft)
+
+The Paste action accepts image-only clipboard clips; the terminal menu also offers **Import image** through Open Document. A separate Sharesheet target asks for confirmation before pasting paths. Android 7.1 and later may send supported image content from an IME. Normal text clipboard content takes precedence. PNG, JPEG and WebP content URIs are streamed to the app cache and checked against their provider MIME and file signature. The resulting quoted paths are pasted into the originating session without an Enter key; the destination program must accept file paths.
+
+Import is limited to eight images, 20 MiB per image, 40 MiB per batch and 100 MiB for the image cache. Partial files older than 24 hours are removed; completed files are retained until the user or Android removes them. Move important files out of cache. A batch failure removes its completed files. MIME and signature checks are not full image decoding or validation. An import that completes after switching sessions leaves its files in cache instead of inserting paths into the new session.
+
+This work is a draft. Sharesheet and IME URI grants, picker and activity lifecycle, process-death recovery, shell quoting across shells, provider failures, rotation, session switching and repeated imports require Android testing. Limits are currently fixed; there is no image preview or cache management UI. This does not add inline graphics or a binary clipboard protocol. Large text or image path writes may be rejected by the bounded input queue.
+
+`./gradlew :app:testDebugUnitTest --tests com.termux.app.terminal.clipboard.ImageStreamImporterTest` checks streaming signatures and size limits. `scripts/test-share-uri-host.sh` tests share selection using Android stubs, not the Android framework or URI permission lifecycle.

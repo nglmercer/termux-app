@@ -29,6 +29,7 @@ import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputContentInfo;
 import android.widget.Scroller;
 
 import androidx.annotation.Nullable;
@@ -336,8 +337,37 @@ public final class TerminalView extends View {
         // Note that IME_ACTION_NONE cannot be used as that makes it impossible to input newlines using the on-screen
         // keyboard on Android TV (see https://github.com/termux/termux-app/issues/221).
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1 && mClient.isTerminalViewSelected())
+            outAttrs.contentMimeTypes = new String[]{"image/png", "image/jpeg", "image/webp"};
 
         return new BaseInputConnection(this, true) {
+
+            @RequiresApi(api = Build.VERSION_CODES.N_MR1)
+            @Override
+            public boolean commitContent(InputContentInfo content, int flags, android.os.Bundle opts) {
+                if (content == null || mTermSession == null || !mTermSession.isRunning() ||
+                    content.getContentUri() == null || !"content".equals(content.getContentUri().getScheme()) ||
+                    content.getDescription() == null || !(content.getDescription().hasMimeType("image/png") ||
+                      content.getDescription().hasMimeType("image/jpeg") ||
+                      content.getDescription().hasMimeType("image/webp"))) return false;
+                boolean granted = (flags & InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0;
+                if (granted) {
+                    try { content.requestPermission(); }
+                    catch (RuntimeException e) { return false; }
+                }
+                Runnable release = () -> {
+                    if (granted) try { content.releasePermission(); } catch (RuntimeException ignored) { }
+                };
+                boolean accepted = false;
+                try {
+                    accepted = mClient.onImeImage(content.getContentUri(), mTermSession, release);
+                    return accepted;
+                } catch (RuntimeException e) {
+                    return false;
+                } finally {
+                    if (!accepted) release.run();
+                }
+            }
 
             @Override
             public boolean finishComposingText() {
