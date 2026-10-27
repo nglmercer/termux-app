@@ -59,6 +59,20 @@ public class DecSetTest extends TerminalTestCase {
 		mTerminal.paste("\u0081ab\u0081cd\u009F");
 		assertEquals("Pasting C1 control codes should not input it", "\033[200~abcd\033[201~", mOutput.getOutputAndClear());
 
+		mOutput.rejectWrites = true;
+		assertFalse("Rejected paste must be reported to its caller", mTerminal.tryPaste("retry me"));
+		assertEquals("Rejected paste must not send partial delimiters", "", mOutput.getOutputAndClear());
+		mOutput.rejectWrites = false;
+
+		mTerminal.paste("\033\u0081");
+		assertEquals("Control-only paste remains a valid empty bracketed paste", "\033[200~\033[201~", mOutput.getOutputAndClear());
+
+		int writesBeforePaste = mOutput.writes;
+		mTerminal.paste("héllo\n世界\r\nend\033[201~");
+		assertEquals("Bracketed paste is submitted as one atomic write", writesBeforePaste + 1, mOutput.writes);
+		assertEquals("Paste preserves Unicode, normalizes newlines and strips injected escapes",
+			"\033[200~héllo\r世界\rend[201~\033[201~", mOutput.getOutputAndClear());
+
 		mTerminal.reset();
 		mTerminal.paste("a");
 		assertEquals("Terminal reset() should disable bracketed paste mode", "a", mOutput.getOutputAndClear());

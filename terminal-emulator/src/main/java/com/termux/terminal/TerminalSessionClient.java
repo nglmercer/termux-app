@@ -24,6 +24,11 @@ public interface TerminalSessionClient {
 
     void onColorsChanged(@NonNull TerminalSession session);
 
+    /** Called when a complete input write was rejected because the queue is full or closed. */
+    default void onTerminalInputRejected(@NonNull TerminalSession session) {
+        logWarn("TerminalSession", "Terminal input rejected: queue full or closed");
+    }
+
     void onTerminalCursorStateChange(boolean state);
 
     void setTerminalShellPid(@NonNull TerminalSession session, int pid);

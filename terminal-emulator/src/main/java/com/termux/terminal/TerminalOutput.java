@@ -12,6 +12,19 @@ public abstract class TerminalOutput {
         write(bytes, 0, bytes.length);
     }
 
+    /** Attempt to submit a complete UTF-8 write. False means no bytes were accepted. */
+    public final boolean tryWrite(String data) {
+        if (data == null) return false;
+        byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
+        return tryWrite(bytes, 0, bytes.length);
+    }
+
+    /** Subclasses with bounded queues can report a rejected write. */
+    public boolean tryWrite(byte[] data, int offset, int count) {
+        write(data, offset, count);
+        return true;
+    }
+
     /** Write bytes to the terminal client. */
     public abstract void write(byte[] data, int offset, int count);
 

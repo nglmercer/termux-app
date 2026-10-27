@@ -2,12 +2,9 @@ package com.termux.app.terminal;
 
 import android.annotation.SuppressLint;
 import android.app.AlertDialog;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
 import android.media.AudioManager;
 import android.os.Environment;
-import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -791,12 +788,7 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     public void doPaste() {
         TerminalSession session = mActivity.getCurrentSession();
-        if (session == null) return;
-        if (!session.isRunning()) return;
-
-        String text = ShareUtils.getTextStringFromClipboardIfSet(mActivity, true);
-        if (text != null)
-            session.getEmulator().paste(text);
+        if (session != null) session.onPasteTextFromClipboard();
     }
 
 }
