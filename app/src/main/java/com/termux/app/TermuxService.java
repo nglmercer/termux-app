@@ -928,7 +928,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
             new com.termux.app.control.ipc.LocalControlServer(this, mControlCore, mControlDispatch, scopes, stopped ->
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
                     if (mLocalControlServer == stopped) mLocalControlServer = null;
-                }));
+                }), mOutputSubscriptions);
         mLocalControlServer = server;
         new Thread(() -> {
             try {
@@ -967,6 +967,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
     public boolean localControlAllowsSessionWrite() {
         return mLocalControlServer != null && mLocalControlServer.allowsSessionWrite();
+    }
+
+    public boolean localControlAllowsOutput() {
+        return mLocalControlServer != null && mLocalControlServer.allowsOutput();
     }
 
     /** Local opt-in for new sessions; no remote caller may grant itself this setting. */

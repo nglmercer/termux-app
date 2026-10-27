@@ -66,6 +66,12 @@ public final class ServiceThreadDispatch {
         return pending.value;
     }
 
+    /** Post idempotent disconnect cleanup without waiting on a socket thread. */
+    public void postCleanup(Runnable cleanup) {
+        if (cleanup == null) throw new IllegalArgumentException("cleanup required");
+        try { mExecutor.execute(cleanup); } catch (RejectedExecutionException ignored) { }
+    }
+
     private static DispatchException timeout(Pending<?> pending) {
         if (pending.state.compareAndSet(PENDING, CANCELLED)) return new DispatchException(Failure.TIMEOUT_NOT_STARTED);
         return new DispatchException(Failure.OUTCOME_UNKNOWN);

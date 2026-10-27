@@ -1,6 +1,7 @@
 package com.termux.app.control.ipc;
 
 import com.termux.app.control.ControlCore;
+import com.termux.app.control.OutputSubscriptions;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -13,9 +14,15 @@ final class RpcConnection {
     private final ServiceThreadDispatch mDispatch;
     private final Set<ControlCore.Scope> mScopes;
     private final Running mRunning;
+    private final OutputSubscriptions mOutputRegistry;
 
     RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running) {
-        mCore = core; mDispatch = dispatch; mScopes = scopes; mRunning = running;
+        this(core, dispatch, scopes, running, null);
+    }
+
+    RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running,
+                  OutputSubscriptions outputRegistry) {
+        mCore = core; mDispatch = dispatch; mScopes = scopes; mRunning = running; mOutputRegistry = outputRegistry;
     }
 
     /** Peer UID is supplied by the operating system, never by the incoming frame. */
@@ -23,7 +30,9 @@ final class RpcConnection {
         if (ownerUid < 0 || peerUid != ownerUid) return;
         FrameCodec frames = new FrameCodec(RpcRequestParser.MAX_REQUEST_BYTES);
         RpcRequestParser parser = new RpcRequestParser();
-        RpcDispatcher dispatcher = new RpcDispatcher(mCore);
+        OutputClientLease lease = mOutputRegistry == null ? null : new OutputClientLease(mOutputRegistry, mDispatch, mScopes);
+        RpcDispatcher dispatcher = new RpcDispatcher(mCore, lease);
+        try {
         for (int i = 0; mRunning.get() && i < 1000; i++) {
             byte[] body = frames.read(input);
             if (body == null) return;
@@ -48,17 +57,22 @@ final class RpcConnection {
                 }
             }
             final byte[] payload = binary;
-            byte[] response;
+            RpcDispatcher.Result response;
             try {
-                response = mDispatch.call(() -> !mRunning.get() ? null : payload == null
-                    ? dispatcher.dispatch(request, mScopes) : dispatcher.dispatchBinary(request, mScopes, payload), 3000);
+                response = mDispatch.call(() -> !mRunning.get() ? null : dispatcher.dispatchResult(request, mScopes, payload), 3000);
             } catch (ServiceThreadDispatch.DispatchException e) {
-                response = RpcDispatcher.transportFailure(request, e.reason);
-                if (response != null) frames.write(output, response);
+                byte[] failure = RpcDispatcher.transportFailure(request, e.reason);
+                if (failure != null) frames.write(output, failure);
                 return;
             }
-            if (response != null) frames.write(output, response);
+            if (response != null && mRunning.get()) {
+                if (response.json != null) frames.write(output, response.json);
+                if (response.binary != null && mRunning.get()) frames.write(output, response.binary);
+            }
             if (!dispatcher.isNegotiated()) return;
+        }
+        } finally {
+            if (lease != null) lease.close();
         }
     }
 }

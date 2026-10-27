@@ -2,6 +2,7 @@ package com.termux.app.control.ipc;
 
 import com.google.gson.stream.JsonWriter;
 import com.termux.app.control.ControlCore;
+import com.termux.terminal.OutputReplayBuffer;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.math.BigDecimal;
@@ -19,40 +20,57 @@ public final class RpcDispatcher {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private final ControlCore mCore;
     private final RpcNegotiation mNegotiation = new RpcNegotiation();
+    private final OutputClientLease mOutput;
 
-    public RpcDispatcher(ControlCore core) {
+    public RpcDispatcher(ControlCore core) { this(core, null); }
+
+    RpcDispatcher(ControlCore core, OutputClientLease output) {
         if (core == null) throw new IllegalArgumentException("core required");
-        mCore = core;
+        mCore = core; mOutput = output;
     }
 
     /** Scopes must be derived from trusted peer authorization, never request parameters. */
     public byte[] dispatch(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes) {
-        return dispatch(request, scopes, null);
+        return dispatchResult(request, scopes, null).json;
     }
 
     byte[] dispatchBinary(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary) {
-        return dispatch(request, scopes, binary);
+        return dispatchResult(request, scopes, binary).json;
     }
 
-    private byte[] dispatch(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary) {
-        if (request == null) return error(null, -32600, "Invalid Request");
+    static final class Result {
+        final byte[] json, binary;
+        Result(byte[] json, byte[] binary) { this.json = json; this.binary = binary; }
+    }
+    private static Result json(byte[] data) { return new Result(data, null); }
+    private static final class OutputValue {
+        final Object metadata;
+        final byte[] bytes;
+        OutputValue(Object metadata, byte[] bytes) { this.metadata = metadata; this.bytes = bytes; }
+    }
+
+    Result dispatchResult(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary) {
+        if (request == null) return json(error(null, -32600, "Invalid Request"));
         try {
             mNegotiation.accept(request);
+            if (!request.hasId && request.method.startsWith("session.output.")) return json(null);
             Object result = invoke(request, scopes, binary);
-            if (!request.hasId) return null;
-            byte[] response = response(request.id, result, null, 0);
-            return response.length <= MAX_RESPONSE_BYTES ? response : error(request.id, -32000, "Response limit exceeded");
+            if (!request.hasId) return json(null);
+            OutputValue output = result instanceof OutputValue ? (OutputValue) result : null;
+            byte[] response = response(request.id, output == null ? result : output.metadata, null, 0);
+            return response.length <= MAX_RESPONSE_BYTES ? new Result(response, output == null ? null : output.bytes) :
+                json(error(request.id, -32000, "Response limit exceeded"));
         } catch (RpcRequestParser.InvalidRequest e) {
-            return request.hasId ? error(request.id, -32600, "Invalid Request") : null;
+            return json(request.hasId ? error(request.id, -32600, "Invalid Request") : null);
         } catch (BadParameters e) {
-            return request.hasId ? error(request.id, -32602, "Invalid params") : null;
+            return json(request.hasId ? error(request.id, -32602, "Invalid params") : null);
         } catch (UnknownMethod e) {
-            return request.hasId ? error(request.id, -32601, "Method not found") : null;
+            return json(request.hasId ? error(request.id, -32601, "Method not found") : null);
         } catch (ControlCore.ControlException e) {
-            return request.hasId ? error(request.id, -32001, e.code.name()) : null;
+            return json(request.hasId ? error(request.id, -32001, e.code.name()) : null);
         } catch (RuntimeException e) {
             // Never serialize backend exceptions, command data or environment to clients.
-            return request.hasId ? error(request.id, -32603, "Internal error") : null;
+            return json(request.hasId ? error(request.id, -32603, "Internal error") : null);
         }
     }
 
@@ -66,6 +84,9 @@ public final class RpcDispatcher {
             case "system.capabilities":
                 parameters(request.params);
                 List<String> methods = new ArrayList<>(mCore.capabilities());
+                if (mOutput != null && scopes != null && scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT)) {
+                    methods.add("session.output.subscribe"); methods.add("session.output.read"); methods.add("session.output.unsubscribe");
+                }
                 return Collections.singletonMap("methods", methods);
             case "session.list":
                 parameters(request.params);
@@ -97,6 +118,27 @@ public final class RpcDispatcher {
                 mCore.resizeSession(scopes, string(p, "id"), number(p, "columns"), number(p, "rows"),
                     optionalNumber(p, "cellWidth"), optionalNumber(p, "cellHeight"));
                 return Collections.singletonMap("ok", true);
+            }
+            case "session.output.subscribe": {
+                Map<?, ?> p = parameters(request.params, "id");
+                if (mOutput == null) throw new UnknownMethod();
+                mOutput.get().subscribe(string(p, "id"));
+                return Collections.singletonMap("ok", true);
+            }
+            case "session.output.unsubscribe": {
+                Map<?, ?> p = parameters(request.params, "id");
+                if (mOutput == null) throw new UnknownMethod();
+                mOutput.get().unsubscribe(string(p, "id"));
+                return Collections.singletonMap("ok", true);
+            }
+            case "session.output.read": {
+                Map<?, ?> p = parameters(request.params, "id", "offset", "limit");
+                if (mOutput == null) throw new UnknownMethod();
+                OutputReplayBuffer.ReadResult value = mOutput.get().read(string(p, "id"), longNumber(p, "offset"), number(p, "limit"));
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                metadata.put("offset", value.offset); metadata.put("nextOffset", value.nextOffset);
+                metadata.put("endOffset", value.endOffset); metadata.put("gap", value.gap); metadata.put("length", value.data.length);
+                return new OutputValue(metadata, value.data.length == 0 ? null : value.data);
             }
             case "session.close": {
                 Map<?, ?> p = parameters(request.params, "id");
@@ -168,6 +210,13 @@ public final class RpcDispatcher {
         Object value = p.get(key);
         if (!(value instanceof BigDecimal)) throw new BadParameters();
         try { return ((BigDecimal) value).intValueExact(); }
+        catch (ArithmeticException e) { throw new BadParameters(); }
+    }
+
+    private static long longNumber(Map<?, ?> p, String key) throws BadParameters {
+        Object value = p.get(key);
+        if (!(value instanceof BigDecimal)) throw new BadParameters();
+        try { return ((BigDecimal) value).longValueExact(); }
         catch (ArithmeticException e) { throw new BadParameters(); }
     }
 

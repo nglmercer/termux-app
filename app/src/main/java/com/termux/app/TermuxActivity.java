@@ -806,9 +806,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (service.hasLocalControl()) {
             new AlertDialog.Builder(this)
                 .setTitle(R.string.action_local_control)
-                .setMessage(service.isLocalControlStopping() ? R.string.local_control_stopping :
+                .setMessage(getString(service.isLocalControlStopping() ? R.string.local_control_stopping :
                     service.isLocalControlRunning() ? (service.localControlAllowsSessionWrite() ?
-                        R.string.local_control_running_write : R.string.local_control_running_read) : R.string.local_control_starting)
+                        R.string.local_control_running_write : R.string.local_control_running_read) : R.string.local_control_starting) +
+                    (service.localControlAllowsOutput() ? "\n\n" + getString(R.string.local_control_output_enabled) : ""))
                 .setPositiveButton(R.string.local_control_stop, (dialog, which) -> {
                     service.stopLocalControl();
                     showToast(getString(R.string.local_control_stopping), false);
@@ -816,17 +817,21 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 .setNegativeButton(android.R.string.cancel, null).show();
             return;
         }
+        android.widget.CheckBox output = new android.widget.CheckBox(this);
+        output.setText(R.string.local_control_output_checkbox);
         new AlertDialog.Builder(this)
             .setTitle(R.string.action_local_control)
             .setMessage(R.string.local_control_explanation)
-            .setPositiveButton(R.string.local_control_read_only, (dialog, which) -> enableLocalControl(service, false))
-            .setNeutralButton(R.string.local_control_read_write, (dialog, which) -> enableLocalControl(service, true))
+            .setView(output)
+            .setPositiveButton(R.string.local_control_read_only, (dialog, which) -> enableLocalControl(service, false, output.isChecked()))
+            .setNeutralButton(R.string.local_control_read_write, (dialog, which) -> enableLocalControl(service, true, output.isChecked()))
             .setNegativeButton(android.R.string.cancel, null).show();
     }
 
-    private void enableLocalControl(TermuxService service, boolean write) {
+    private void enableLocalControl(TermuxService service, boolean write, boolean output) {
         EnumSet<ControlCore.Scope> scopes = EnumSet.of(ControlCore.Scope.SESSIONS_READ);
         if (write) scopes.add(ControlCore.Scope.SESSIONS_WRITE);
+        if (output) scopes.add(ControlCore.Scope.SESSIONS_OUTPUT);
         WeakReference<TermuxActivity> activity = new WeakReference<>(this);
         boolean requested = service.startLocalControl(scopes, started -> {
             TermuxActivity current = activity.get();
