@@ -236,4 +236,16 @@
     <string name="donate_preference_title">Donate</string>
 
     <string name="terminal_input_queue_full">Terminal input was not sent. The input buffer is full or the session is closed. Wait and try again.</string>
+    <string name="action_local_control">Local control</string>
+    <string name="local_control_explanation">Allow local processes running as the Termux app UID to access the control socket. Read-only allows session names and process IDs. Read/write also permits creating and renaming sessions, resizing background sessions, and sending terminal input. The listener stops with the service.</string>
+    <string name="local_control_read_only">Read-only</string>
+    <string name="local_control_read_write">Read/write</string>
+    <string name="local_control_running_read">Local control is enabled with read-only access. Stop it to disconnect clients.</string>
+    <string name="local_control_running_write">Local control is enabled with read/write access. Stop it to disconnect clients.</string>
+    <string name="local_control_starting">Local control is starting.</string>
+    <string name="local_control_stop">Stop</string>
+    <string name="local_control_stopping">Local control is stopping.</string>
+    <string name="local_control_enabled">Local control enabled for this service session.</string>
+    <string name="local_control_start_failed">Local control could not start. Check for a previous listener or a stale control socket.</string>
+    <string name="local_control_unavailable">Local control is unavailable.</string>
 </resources>

@@ -27,6 +27,7 @@ import android.widget.RelativeLayout;
 import android.widget.Toast;
 
 import com.termux.R;
+import com.termux.app.control.ControlCore;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
@@ -66,6 +67,8 @@ import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.viewpager.widget.ViewPager;
 
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.lang.ref.WeakReference;
 
 /**
  * A terminal emulator activity.
@@ -188,6 +191,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_HELP_ID = 7;
     private static final int CONTEXT_MENU_SETTINGS_ID = 8;
     private static final int CONTEXT_MENU_REPORT_ID = 9;
+    private static final int CONTEXT_MENU_LOCAL_CONTROL = 13;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -633,6 +637,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         boolean autoFillEnabled = mTerminalView.isAutoFillEnabled();
 
+        menu.add(Menu.NONE, CONTEXT_MENU_LOCAL_CONTROL, Menu.NONE, R.string.action_local_control);
         menu.add(Menu.NONE, CONTEXT_MENU_SELECT_URL_ID, Menu.NONE, R.string.action_select_url);
         menu.add(Menu.NONE, CONTEXT_MENU_SHARE_TRANSCRIPT_ID, Menu.NONE, R.string.action_share_transcript);
         if (!DataUtils.isNullOrEmpty(mTerminalView.getStoredSelectedText()))
@@ -662,6 +667,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TerminalSession session = getCurrentSession();
 
         switch (item.getItemId()) {
+            case CONTEXT_MENU_LOCAL_CONTROL:
+                showLocalControlDialog();
+                return true;
             case CONTEXT_MENU_SELECT_URL_ID:
                 mTermuxTerminalViewClient.showUrlSelection();
                 return true;
@@ -787,6 +795,45 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
             }
         }.start();
+    }
+
+    private void showLocalControlDialog() {
+        TermuxService service = getTermuxService();
+        if (service == null) {
+            showToast(getString(R.string.local_control_unavailable), true);
+            return;
+        }
+        if (service.hasLocalControl()) {
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.action_local_control)
+                .setMessage(service.isLocalControlStopping() ? R.string.local_control_stopping :
+                    service.isLocalControlRunning() ? (service.localControlAllowsSessionWrite() ?
+                        R.string.local_control_running_write : R.string.local_control_running_read) : R.string.local_control_starting)
+                .setPositiveButton(R.string.local_control_stop, (dialog, which) -> {
+                    service.stopLocalControl();
+                    showToast(getString(R.string.local_control_stopping), false);
+                })
+                .setNegativeButton(android.R.string.cancel, null).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(R.string.action_local_control)
+            .setMessage(R.string.local_control_explanation)
+            .setPositiveButton(R.string.local_control_read_only, (dialog, which) -> enableLocalControl(service, false))
+            .setNeutralButton(R.string.local_control_read_write, (dialog, which) -> enableLocalControl(service, true))
+            .setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void enableLocalControl(TermuxService service, boolean write) {
+        EnumSet<ControlCore.Scope> scopes = EnumSet.of(ControlCore.Scope.SESSIONS_READ);
+        if (write) scopes.add(ControlCore.Scope.SESSIONS_WRITE);
+        WeakReference<TermuxActivity> activity = new WeakReference<>(this);
+        boolean requested = service.startLocalControl(scopes, started -> {
+            TermuxActivity current = activity.get();
+            if (current != null && current.isVisible())
+                current.showToast(current.getString(started ? R.string.local_control_enabled : R.string.local_control_start_failed), true);
+        });
+        if (!requested) showToast(getString(R.string.local_control_unavailable), true);
     }
 
     @Override
