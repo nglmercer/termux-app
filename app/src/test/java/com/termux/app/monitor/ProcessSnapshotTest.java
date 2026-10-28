@@ -33,6 +33,48 @@ public class ProcessSnapshotTest {
             for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
         }
     }
+    @Test public void processTableSearchesAndSortsBeforeLimitingDisplay() throws Exception {
+        File root = Files.createTempDirectory("proc-table").toFile();
+        try {
+            add(root, 10, 1, 1000); add(root, 11, 10, 1000); add(root, 12, 10, 1000);
+            writeStat(root, 10, "zsh", 1, 55, 10, 5);
+            writeStat(root, 11, "Build", 10, 55, 10, 10);
+            ProcessSnapshot previous = ProcessSnapshot.collect(root, 1000, Collections.singleton(10));
+            writeStat(root, 10, "zsh", 1, 55, 30, 5);
+            writeStat(root, 11, "Build", 10, 55, 60, 10);
+            writeStat(root, 12, "agent", 10, 56, 100, 20); // Reused PID has unknown CPU.
+            ProcessSnapshot current = ProcessSnapshot.collect(root, 1000, Collections.singleton(10));
+            ProcessTable table = new ProcessTable(current, previous, 1000, 100, 4096);
+            assertEquals(11, table.select("bUi", ProcessTable.Sort.PID).get(0).entry.pid);
+            assertEquals(3, table.select("10", ProcessTable.Sort.PID).size());
+            assertEquals(12, table.select("", ProcessTable.Sort.NAME).get(0).entry.pid);
+            assertEquals(11, table.select("", ProcessTable.Sort.CPU).get(0).entry.pid);
+            assertEquals(12, table.select("", ProcessTable.Sort.CPU).get(2).entry.pid);
+            assertEquals(12, table.select("", ProcessTable.Sort.RSS).get(0).entry.pid);
+            assertTrue(table.select("missing", ProcessTable.Sort.PID).isEmpty());
+        } finally {
+            for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
+        }
+    }
+    @Test public void searchFindsEntriesBeyondDisplayLimit() throws Exception {
+        File root = Files.createTempDirectory("proc-table-many").toFile();
+        try {
+            for (int pid = 1; pid <= 140; pid++) add(root, pid, pid == 1 ? 0 : 1, 1000);
+            writeStat(root, 140, "unique-target", 1, 55, 10, 1000);
+            ProcessSnapshot current = ProcessSnapshot.collect(root, 1000, Collections.singleton(1));
+            ProcessTable table = new ProcessTable(current, null, 0, 100, 4096);
+            assertEquals(140, table.select("", ProcessTable.Sort.PID).size());
+            assertEquals(140, table.select("unique-target", ProcessTable.Sort.PID).get(0).entry.pid);
+            assertEquals(140, table.select("", ProcessTable.Sort.RSS).get(0).entry.pid);
+            assertNull(table.select("", ProcessTable.Sort.CPU).get(0).cpuPercent);
+        } finally {
+            for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
+        }
+    }
+    private static void writeStat(File root, int pid, String name, int ppid, long start, long user, long rss) throws Exception {
+        String line = pid + " (" + name + ") S " + ppid + " 0 0 0 0 0 0 0 0 0 " + user + " 20 0 0 0 0 0 0 " + start + " 0 " + rss;
+        Files.write(new File(new File(root, String.valueOf(pid)), "stat").toPath(), line.getBytes(StandardCharsets.UTF_8));
+    }
     @Test public void cpuDeltaRequiresStableIdentityAndMonotonicCounters() {
         ProcessSnapshot.Entry before = new ProcessSnapshot.Entry(4, 1, "x", 'S', 9, 10, 20, 2);
         ProcessSnapshot.Entry after = new ProcessSnapshot.Entry(4, 1, "x", 'S', 9, 60, 70, 3);
