@@ -5,6 +5,7 @@ import android.content.Context;
 import android.net.Uri;
 import android.system.ErrnoException;
 import android.system.Os;
+import com.termux.shared.termux.settings.properties.ClipboardImageLimits;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -17,15 +18,13 @@ import java.util.ArrayList;
 
 /** Imports one content URI into Termux's private cache. Call only on an I/O thread. */
 public final class ClipboardImageImporter {
-    private static final long MAX_BYTES = 20L * 1024 * 1024;
-    private static final long MAX_BATCH_BYTES = 40L * 1024 * 1024;
-    private static final long MAX_CACHE_BYTES = 100L * 1024 * 1024;
     private static final long PARTIAL_MAX_AGE_MS = 24L * 60 * 60 * 1000;
     public static final int MAX_BATCH_ITEMS = 8;
     private ClipboardImageImporter() {}
 
     /** Returns every file in clipboard order; deletes the entire batch on failure. */
-    public static synchronized List<File> importImages(Context context, List<Uri> uris) throws IOException {
+    public static synchronized List<File> importImages(Context context, List<Uri> uris, ClipboardImageLimits limits) throws IOException {
+        if (limits == null) throw new IOException("Missing image limits");
         if (uris.isEmpty() || uris.size() > MAX_BATCH_ITEMS) throw new IOException("Invalid image count");
         File cacheRoot = context.getCacheDir();
         if (cacheRoot == null) throw new IOException("Image cache unavailable");
@@ -36,25 +35,19 @@ public final class ClipboardImageImporter {
             throw new IOException("Image cache is redirected");
         removeStalePartialFiles(directory, System.currentTimeMillis());
         List<File> files = new ArrayList<>();
-        long available = cacheRemaining(directory, MAX_CACHE_BYTES);
-        if (available < 12) throw new ImageImportException(ImageImportException.Reason.CACHE);
-        long remaining = Math.min(MAX_BATCH_BYTES, available);
+        long available = cacheRemaining(directory, limits.cacheBytes());
+        ImageImportBudget budget = new ImageImportBudget(limits, available);
         boolean completed = false;
         try {
             for (Uri uri : uris) {
-                if (remaining < 12) throw new ImageImportException(available < MAX_BATCH_BYTES
-                    ? ImageImportException.Reason.CACHE : ImageImportException.Reason.SIZE);
                 File file;
                 try {
-                    file = importImage(context, directory, uri, Math.min(MAX_BYTES, remaining));
+                    file = importImage(context, directory, uri, budget.nextLimit());
                 } catch (ImageImportException e) {
-                    if (e.getReason() == ImageImportException.Reason.SIZE
-                        && available < MAX_BATCH_BYTES && remaining < MAX_BYTES)
-                        throw new ImageImportException(ImageImportException.Reason.CACHE);
-                    throw e;
+                    throw budget.mapSizeFailure(e);
                 }
                 files.add(file);
-                remaining -= file.length();
+                budget.consume(file.length());
             }
             completed = true;
             return files;

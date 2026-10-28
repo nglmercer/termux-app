@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Set;
 
 /*
- * Version: v0.18.0
+ * Version: v0.19.0
  * SPDX-License-Identifier: MIT
  *
  * Changelog
@@ -77,6 +77,9 @@ import java.util.Set;
  *
  * - 0.17.0 (2022-03-17)
  *      - Add `KEY_DELETE_TMPDIR_FILES_OLDER_THAN_X_DAYS_ON_EXIT`.
+ *
+ * - 0.19.0
+ *      - Add configurable clipboard image size limits.
  *
  * - 0.18.0 (2022-06-13)
  *      - Add `KEY_DISABLE_FILE_SHARE_RECEIVER` and `KEY_DISABLE_FILE_VIEW_RECEIVER`.
@@ -166,6 +169,11 @@ public final class TermuxPropertyConstants {
 
 
     /* int */
+
+    /** Clipboard image byte quotas, expressed as whole MiB. */
+    public static final String KEY_CLIPBOARD_IMAGE_MAX_FILE_MIB = "clipboard-image-max-file-mib";
+    public static final String KEY_CLIPBOARD_IMAGE_MAX_BATCH_MIB = "clipboard-image-max-batch-mib";
+    public static final String KEY_CLIPBOARD_IMAGE_MAX_CACHE_MIB = "clipboard-image-max-cache-mib";
 
     /** Defines the key for the bell behaviour */
     public static final String KEY_BELL_BEHAVIOUR =  "bell-character"; // Default: "bell-character"
@@ -406,6 +414,9 @@ public final class TermuxPropertyConstants {
         TermuxConstants.PROP_ALLOW_EXTERNAL_APPS,
 
         /* int */
+        KEY_CLIPBOARD_IMAGE_MAX_FILE_MIB,
+        KEY_CLIPBOARD_IMAGE_MAX_BATCH_MIB,
+        KEY_CLIPBOARD_IMAGE_MAX_CACHE_MIB,
         KEY_BELL_BEHAVIOUR,
         KEY_DELETE_TMPDIR_FILES_OLDER_THAN_X_DAYS_ON_EXIT,
         KEY_TERMINAL_CURSOR_BLINK_RATE,
