@@ -17,6 +17,7 @@ final class RpcConnection {
     private final Running mRunning;
     private final OutputSubscriptions mOutputRegistry;
     private final RequestPermit mPermit;
+    private final java.security.SecureRandom mTokenRandom;
 
     RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running) {
         this(core, dispatch, scopes, running, null);
@@ -30,6 +31,16 @@ final class RpcConnection {
                   OutputSubscriptions outputRegistry, RequestPermit permit) {
         if (permit == null) throw new IllegalArgumentException("Missing request limiter");
         mCore = core; mDispatch = dispatch; mScopes = scopes; mRunning = running; mOutputRegistry = outputRegistry; mPermit = permit;
+        // Constructed on the socket worker; no secure-random operation runs on the service thread.
+        mTokenRandom = scopes != null && scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME) ? new java.security.SecureRandom() : null;
+    }
+
+    private String freshToken() {
+        byte[] bytes = new byte[32]; mTokenRandom.nextBytes(bytes);
+        char[] hex = new char[64], digits = "0123456789abcdef".toCharArray();
+        for (int i = 0; i < bytes.length; i++) { hex[i * 2] = digits[(bytes[i] & 255) >>> 4]; hex[i * 2 + 1] = digits[bytes[i] & 15]; }
+        java.util.Arrays.fill(bytes, (byte) 0);
+        return new String(hex);
     }
 
     /** Peer UID is supplied by the operating system, never by the incoming frame. */
@@ -67,9 +78,10 @@ final class RpcConnection {
                 }
             }
             final byte[] payload = binary;
+            final String token = mTokenRandom != null && "session.output.subscribe".equals(request.method) && request.hasId ? freshToken() : null;
             RpcDispatcher.Result response;
             try {
-                response = mDispatch.call(() -> !mRunning.get() ? null : dispatcher.dispatchResult(request, mScopes, payload), 3000);
+                response = mDispatch.call(() -> !mRunning.get() ? null : dispatcher.dispatchResult(request, mScopes, payload, token), 3000);
             } catch (ServiceThreadDispatch.DispatchException e) {
                 byte[] failure = RpcDispatcher.transportFailure(request, e.reason);
                 if (failure != null) frames.write(output, failure);

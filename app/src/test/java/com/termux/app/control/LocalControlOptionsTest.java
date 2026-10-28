@@ -15,5 +15,8 @@ public class LocalControlOptionsTest {
         assertTrue(allowed.contains(ControlCore.Scope.SESSIONS_CLOSE));
         assertTrue(allowed.contains(ControlCore.Scope.SESSIONS_OUTPUT));
         assertTrue(allowed.contains(ControlCore.Scope.SESSIONS_WRITE));
+        assertFalse(LocalControlOptions.scopes(true, false, false, true).contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME));
+        assertFalse(LocalControlOptions.scopes(true, true, false, false).contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME));
+        assertTrue(LocalControlOptions.scopes(true, true, false, true).contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME));
     }
 }

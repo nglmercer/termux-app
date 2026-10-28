@@ -115,6 +115,8 @@ public final class LocalControlServer implements AutoCloseable {
 
     public boolean allowsOutput() { return mScopes.contains(ControlCore.Scope.SESSIONS_OUTPUT); }
 
+    public boolean allowsOutputResume() { return mScopes.contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME); }
+
     private void acceptLoop() {
         try {
             while (isRunning()) {
