@@ -5,7 +5,6 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
-import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -32,6 +31,8 @@ import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.clipboard.ClipboardImageImporter;
 import com.termux.app.terminal.clipboard.SharedImageUris;
+import com.termux.app.terminal.clipboard.PickerImageSelection;
+import com.termux.app.terminal.clipboard.ImagePickerDelivery;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
 import com.termux.shared.activities.ReportActivity;
@@ -196,7 +197,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_IMPORT_IMAGE = 12;
     private static final int REQUEST_IMPORT_IMAGE = 48372;
     private static final String STATE_IMAGE_IMPORT_SESSION = "image_import_session";
+    private static final String STATE_IMAGE_IMPORT_URIS = "image_import_uris";
     private String mImageImportSessionHandle;
+    private ArrayList<Uri> mPendingPickerUris;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -211,6 +214,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (savedInstanceState != null) {
             mIsActivityRecreated = savedInstanceState.getBoolean(ARG_ACTIVITY_RECREATED, false);
             mImageImportSessionHandle = savedInstanceState.getString(STATE_IMAGE_IMPORT_SESSION);
+            ArrayList<Uri> restored = savedInstanceState.getParcelableArrayList(STATE_IMAGE_IMPORT_URIS);
+            if (restored != null) {
+                try { mPendingPickerUris = PickerImageSelection.validate(restored); }
+                catch (RuntimeException ignored) { mImageImportSessionHandle = null; }
+            }
         }
 
         // Delete ReportInfo serialized object files from cache older than 14 days
@@ -332,6 +340,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         mIsOnResumeAfterOnCreate = false;
         consumeImageShareWhenReady();
+        consumePendingImagePickerWhenReady();
     }
 
     @Override
@@ -394,6 +403,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         saveTerminalToolbarTextInput(savedInstanceState);
         savedInstanceState.putBoolean(ARG_ACTIVITY_RECREATED, true);
         savedInstanceState.putString(STATE_IMAGE_IMPORT_SESSION, mImageImportSessionHandle);
+        if (mPendingPickerUris != null) savedInstanceState.putParcelableArrayList(STATE_IMAGE_IMPORT_URIS, mPendingPickerUris);
     }
 
 
@@ -427,6 +437,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         }
                         mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);
                         consumeImageShareWhenReady();
+                        consumePendingImagePickerWhenReady();
                     } catch (WindowManager.BadTokenException e) {
                         // Activity finished - ignore.
                     }
@@ -451,6 +462,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         // Update the {@link TerminalSession} and {@link TerminalEmulator} clients.
         mTermuxService.setTermuxTerminalSessionClient(mTermuxTerminalSessionActivityClient);
         consumeImageShareWhenReady();
+        consumePendingImagePickerWhenReady();
     }
 
     @Override
@@ -852,6 +864,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private void openImagePicker(TerminalSession session) {
         if (session == null || !session.isRunning()) return;
+        if (mImageImportSessionHandle != null || mPendingPickerUris != null) {
+            showToast(getString(R.string.clipboard_image_busy), true); return;
+        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/*");
@@ -867,38 +882,39 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void handleImagePickerResult(int resultCode, @Nullable Intent data) {
+        if (resultCode != RESULT_OK || data == null) {
+            mImageImportSessionHandle = null; mPendingPickerUris = null; return;
+        }
+        if (mImageImportSessionHandle == null) {
+            showToast(getString(R.string.clipboard_image_picker_session_changed), true); return;
+        }
+        try { mPendingPickerUris = PickerImageSelection.fromIntent(data); }
+        catch (PickerImageSelection.TooManyException e) {
+            mImageImportSessionHandle = null;
+            showToast(getString(R.string.clipboard_image_too_many), true); return;
+        } catch (RuntimeException e) {
+            mImageImportSessionHandle = null;
+            showToast(getString(R.string.clipboard_image_failed), true); return;
+        }
+        consumePendingImagePickerWhenReady();
+    }
+
+    /** Only deliver the result to the originating, currently selected live session. */
+    public void consumePendingImagePickerWhenReady() {
+        if (mPendingPickerUris == null) return;
+        boolean ready = mTermuxService != null && mTermuxTerminalSessionActivityClient != null;
         String handle = mImageImportSessionHandle;
-        mImageImportSessionHandle = null;
-        if (resultCode != RESULT_OK || data == null) return;
-        TerminalSession session = getCurrentSession();
-        if (handle == null || session == null || !handle.equals(session.mHandle) || !session.isRunning()
-            || mTermuxTerminalSessionActivityClient == null) {
-            showToast(getString(R.string.clipboard_image_picker_session_changed), true);
-            return;
+        TerminalSession original = !ready || handle == null ? null : mTermuxService.getTerminalSessionForHandle(handle);
+        TerminalSession current = ready ? getCurrentSession() : null;
+        ImagePickerDelivery.Decision decision = ImagePickerDelivery.decide(mIsVisible, ready, original != null,
+            current != null, original != null && original == current, original != null && original.isRunning());
+        if (decision == ImagePickerDelivery.Decision.WAIT) return;
+        ArrayList<Uri> uris = mPendingPickerUris;
+        mPendingPickerUris = null; mImageImportSessionHandle = null;
+        if (decision == ImagePickerDelivery.Decision.REJECT) {
+            showToast(getString(R.string.clipboard_image_picker_session_changed), true); return;
         }
-        List<Uri> uris = new ArrayList<>();
-        ClipData clip = data.getClipData();
-        if (clip != null) {
-            if (clip.getItemCount() > ClipboardImageImporter.MAX_BATCH_ITEMS) {
-                showToast(getString(R.string.clipboard_image_too_many), true);
-                return;
-            }
-            for (int i = 0; i < clip.getItemCount(); i++) {
-                Uri uri = clip.getItemAt(i).getUri();
-                if (uri == null) {
-                    showToast(getString(R.string.clipboard_image_failed), true);
-                    return;
-                }
-                uris.add(uri);
-            }
-        } else if (data.getData() != null) {
-            uris.add(data.getData());
-        }
-        if (uris.isEmpty()) {
-            showToast(getString(R.string.clipboard_image_failed), true);
-            return;
-        }
-        mTermuxTerminalSessionActivityClient.importClipboardImages(session, uris);
+        mTermuxTerminalSessionActivityClient.importClipboardImages(original, uris);
     }
 
     @Override
