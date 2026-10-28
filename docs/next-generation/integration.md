@@ -1,0 +1,7 @@
+# Integration work in progress
+
+This branch combines the PTY/input, image import, local control/output and read-only process-monitor draft branches for integration testing. It is not a release branch. The terminal menu also has a diagnostic dialog that reports version, session counts, local-control state, storage and notification status, process-visibility restrictions, and clipboard MIME metadata only when requested by the user.
+
+The combined JVM tests cover emulator behavior, image stream validation, local control protocol and process-snapshot logic. They do not prove Android UI, input methods, clipboard/provider grants, actual local-socket credentials, live PTY attachment, process sampling, battery behavior, APK installation or plugin compatibility. In particular, queue saturation can reject input; output polling can lose data after a gap or reconnect; process ownership is only a best-effort read-only snapshot. The remote gateway, ADB UI, full settings and extra-key editor, shell-aware completion, inline graphics work, security review and release matrix remain outstanding.
+
+Use the individual draft PRs for workstream review; changes here combine them and may need to be rebased when those branches change. The experimental Termux-host build uses an untrusted debug key, cannot update an official differently signed installation, and requires an explicit backup and migration plan before any replacement.

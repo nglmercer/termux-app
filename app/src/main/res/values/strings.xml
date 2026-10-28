@@ -294,4 +294,17 @@
     <string name="process_snapshot_pause">Pause</string>
     <string name="process_snapshot_resume">Resume</string>
     <string name="diagnostics_unknown">Unavailable or unknown</string>
+    <string name="action_diagnostics">Diagnostics</string>
+    <string name="diagnostics_versions">Termux %1$s\nAndroid %2$s (API %3$d)\nKernel %4$s</string>
+    <string name="diagnostics_sessions">Terminal sessions: %1$d running of %2$d</string>
+    <string name="diagnostics_sessions_unknown">Terminal sessions: unavailable</string>
+    <string name="diagnostics_control_off">Local control: off</string>
+    <string name="diagnostics_control_read">Local control: read-only</string>
+    <string name="diagnostics_control_write">Local control: read/write</string>
+    <string name="diagnostics_process_visibility">Process visibility: Android may restrict access to other apps and /proc. A device-wide process list is not available here.</string>
+    <string name="diagnostics_granted">Granted or enabled</string>
+    <string name="diagnostics_not_granted">Not granted or disabled</string>
+    <string name="diagnostics_storage">Broad shared storage access: %1$s</string>
+    <string name="diagnostics_notifications">App notifications: %1$s</string>
+    <string name="diagnostics_clipboard">Clipboard MIME metadata: %1$s</string>
 </resources>

@@ -6,6 +6,12 @@ import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Environment;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -199,6 +205,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_SETTINGS_ID = 8;
     private static final int CONTEXT_MENU_REPORT_ID = 9;
     private static final int CONTEXT_MENU_LOCAL_CONTROL = 13;
+    private static final int CONTEXT_MENU_DIAGNOSTICS = 14;
     private static final int CONTEXT_MENU_IMPORT_IMAGE = 12;
     private static final int REQUEST_IMPORT_IMAGE = 48372;
     private static final String STATE_IMAGE_IMPORT_SESSION = "image_import_session";
@@ -676,6 +683,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         boolean autoFillEnabled = mTerminalView.isAutoFillEnabled();
 
         menu.add(Menu.NONE, CONTEXT_MENU_LOCAL_CONTROL, Menu.NONE, R.string.action_local_control);
+        menu.add(Menu.NONE, CONTEXT_MENU_DIAGNOSTICS, Menu.NONE, R.string.action_diagnostics);
         menu.add(Menu.NONE, CONTEXT_MENU_IMPORT_IMAGE, Menu.NONE, R.string.action_import_image).setEnabled(currentSession.isRunning());
         menu.add(Menu.NONE, CONTEXT_MENU_PROCESS_SNAPSHOT, Menu.NONE, R.string.action_process_snapshot);
         menu.add(Menu.NONE, CONTEXT_MENU_SELECT_URL_ID, Menu.NONE, R.string.action_select_url);
@@ -707,6 +715,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TerminalSession session = getCurrentSession();
 
         switch (item.getItemId()) {
+            case CONTEXT_MENU_DIAGNOSTICS:
+                showDiagnostics();
+                return true;
             case CONTEXT_MENU_LOCAL_CONTROL:
                 showLocalControlDialog();
                 return true;
@@ -841,6 +852,64 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 }
             }
         }.start();
+    }
+
+    /** Read clipboard description only in response to this explicit diagnostic action. */
+    private void showDiagnostics() {
+        String unknown = getString(R.string.diagnostics_unknown);
+        StringBuilder info = new StringBuilder();
+        info.append(getString(R.string.diagnostics_versions, com.termux.BuildConfig.VERSION_NAME,
+            Build.VERSION.RELEASE, Build.VERSION.SDK_INT, System.getProperty("os.version", unknown)));
+        TermuxService service = getTermuxService();
+        if (service == null) {
+            info.append("\n\n").append(getString(R.string.diagnostics_sessions_unknown));
+        } else {
+            int total = service.getTermuxSessionsSize(), running = 0;
+            for (int i = 0; i < total; i++) {
+                com.termux.shared.termux.shell.command.runner.terminal.TermuxSession item = service.getTermuxSession(i);
+                if (item != null && item.getTerminalSession().isRunning()) running++;
+            }
+            info.append("\n\n").append(getString(R.string.diagnostics_sessions, running, total));
+            int controlStatus = !service.hasLocalControl() ? R.string.diagnostics_control_off :
+                service.isLocalControlStopping() ? R.string.local_control_stopping :
+                service.isLocalControlRunning() ? (service.localControlAllowsSessionWrite() ?
+                    R.string.diagnostics_control_write : R.string.diagnostics_control_read) : R.string.local_control_starting;
+            info.append("\n").append(getString(controlStatus));
+        }
+        info.append("\n\n").append(getString(R.string.diagnostics_process_visibility));
+        String storage = unknown;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            storage = getString(Environment.isExternalStorageManager() ? R.string.diagnostics_granted : R.string.diagnostics_not_granted);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            storage = getString(checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED ?
+                R.string.diagnostics_granted : R.string.diagnostics_not_granted);
+        }
+        info.append("\n\n").append(getString(R.string.diagnostics_storage, storage));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            NotificationManager notifications = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            String status = notifications == null ? unknown : getString(notifications.areNotificationsEnabled() ?
+                R.string.diagnostics_granted : R.string.diagnostics_not_granted);
+            info.append("\n").append(getString(R.string.diagnostics_notifications, status));
+        }
+        StringBuilder formats = new StringBuilder();
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipDescription description = clipboard == null ? null : clipboard.getPrimaryClipDescription();
+            if (description != null) {
+                int count = Math.min(description.getMimeTypeCount(), 16);
+                for (int i = 0; i < count; i++) {
+                    String mime = description.getMimeType(i);
+                    if (mime == null) continue;
+                    if (formats.length() != 0) formats.append(", ");
+                    // Provider-controlled metadata must not grow the dialog without bound.
+                    formats.append(mime.substring(0, Math.min(mime.length(), 128)).replaceAll("[\\p{Cntrl}]", "?"));
+                }
+                if (description.getMimeTypeCount() > count) formats.append(", …");
+            }
+        } catch (RuntimeException ignored) { /* Clipboard metadata may be unavailable. */ }
+        info.append("\n\n").append(getString(R.string.diagnostics_clipboard, formats.length() == 0 ? unknown : formats.toString()));
+        new AlertDialog.Builder(this).setTitle(R.string.action_diagnostics).setMessage(info.toString())
+            .setPositiveButton(android.R.string.ok, null).show();
     }
 
     private void showLocalControlDialog() {
