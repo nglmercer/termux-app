@@ -56,6 +56,35 @@ public class ProcessSnapshotTest {
             for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
         }
     }
+    @Test public void filtersSessionsTasksAndAllVisibleWithoutOtherUids() throws Exception {
+        File root = Files.createTempDirectory("proc-table-scopes").toFile();
+        try {
+            add(root, 10, 1, 1000); add(root, 11, 10, 1000); add(root, 12, 11, 1000);
+            add(root, 13, 1, 1000); add(root, 14, 1, 1000); add(root, 15, 10, 2000);
+            java.util.Set<Integer> sessions = Collections.singleton(10);
+            java.util.Set<Integer> tasks = new java.util.HashSet<>(java.util.Arrays.asList(11, 13));
+            java.util.Set<Integer> roots = new java.util.HashSet<>(sessions); roots.addAll(tasks);
+            ProcessSnapshot current = ProcessSnapshot.collect(root, 1000, roots);
+            assertEquals(4, current.entries.size()); assertEquals(5, current.visibleEntries.size());
+            ProcessTable table = new ProcessTable(current, null, 0, 100, 4096, sessions, tasks);
+            assertEquals(4, table.select("", ProcessTable.Sort.PID, ProcessTable.Scope.OWNED).size());
+            assertEquals(3, table.select("", ProcessTable.Sort.PID, ProcessTable.Scope.SESSION).size());
+            assertEquals(3, table.select("", ProcessTable.Sort.PID, ProcessTable.Scope.TASK).size());
+            assertEquals(5, table.select("", ProcessTable.Sort.PID, ProcessTable.Scope.ALL_VISIBLE).size());
+            assertEquals(4, table.select("", ProcessTable.Sort.PID, null).size());
+            assertEquals(4, new ProcessTable(current, null, 0, 100, 4096).select("", ProcessTable.Sort.PID).size());
+            ProcessTable.Row overlap = table.select("11", ProcessTable.Sort.PID, ProcessTable.Scope.OWNED).get(0);
+            assertTrue(overlap.session); assertTrue(overlap.task);
+            assertTrue(table.select("14", ProcessTable.Sort.PID, ProcessTable.Scope.OWNED).isEmpty());
+            assertEquals(14, table.select("14", ProcessTable.Sort.PID, ProcessTable.Scope.ALL_VISIBLE).get(0).entry.pid);
+            assertTrue(table.select("15", ProcessTable.Sort.PID, ProcessTable.Scope.ALL_VISIBLE).isEmpty());
+            ProcessTable missingRoot = new ProcessTable(current, null, 0, 100, 4096, Collections.singleton(99), Collections.emptySet());
+            assertTrue(missingRoot.select("", ProcessTable.Sort.PID, ProcessTable.Scope.OWNED).isEmpty());
+            assertEquals(5, missingRoot.select("", ProcessTable.Sort.PID, ProcessTable.Scope.ALL_VISIBLE).size());
+        } finally {
+            for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
+        }
+    }
     @Test public void searchFindsEntriesBeyondDisplayLimit() throws Exception {
         File root = Files.createTempDirectory("proc-table-many").toFile();
         try {

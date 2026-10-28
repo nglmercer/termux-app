@@ -18,12 +18,13 @@ import java.util.Set;
 /** Read-only, best-effort view of same-UID descendants of known session PIDs. */
 public final class ProcessSnapshot {
     private static final int MAX_ENTRIES = 4096, MAX_LINE = 16384;
-    public final List<Entry> entries;
+    public final List<Entry> entries, visibleEntries;
     public final boolean incomplete;
     public final int missingRoots;
 
-    private ProcessSnapshot(List<Entry> entries, boolean incomplete, int missingRoots) {
+    private ProcessSnapshot(List<Entry> entries, List<Entry> visibleEntries, boolean incomplete, int missingRoots) {
         this.entries = Collections.unmodifiableList(entries);
+        this.visibleEntries = Collections.unmodifiableList(visibleEntries);
         this.incomplete = incomplete;
         this.missingRoots = missingRoots;
     }
@@ -58,8 +59,8 @@ public final class ProcessSnapshot {
     public static ProcessSnapshot collect(File proc, int uid, Set<Integer> roots) {
         String[] names;
         try { names = proc.list(); }
-        catch (SecurityException e) { return new ProcessSnapshot(new ArrayList<>(), true, roots.size()); }
-        if (names == null) return new ProcessSnapshot(new ArrayList<>(), true, roots.size());
+        catch (SecurityException e) { return new ProcessSnapshot(new ArrayList<>(), new ArrayList<>(), true, roots.size()); }
+        if (names == null) return new ProcessSnapshot(new ArrayList<>(), new ArrayList<>(), true, roots.size());
         Map<Integer, Entry> candidates = new HashMap<>();
         boolean incomplete = false;
         int visited = 0;
@@ -101,7 +102,9 @@ public final class ProcessSnapshot {
             if (descendants != null) for (Entry child : descendants) pending.addLast(child.pid);
         }
         Collections.sort(selected, (a, b) -> Integer.compare(a.pid, b.pid));
-        return new ProcessSnapshot(selected, incomplete, missing);
+        List<Entry> visible = new ArrayList<>(candidates.values());
+        Collections.sort(visible, (a, b) -> Integer.compare(a.pid, b.pid));
+        return new ProcessSnapshot(selected, visible, incomplete, missing);
     }
 
     private static int readUid(File status) throws IOException {
