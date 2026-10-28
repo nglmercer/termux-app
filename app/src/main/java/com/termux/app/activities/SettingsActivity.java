@@ -59,6 +59,11 @@ public class SettingsActivity extends AppCompatActivity {
             if (context == null) return;
 
             setPreferencesFromResource(R.xml.root_preferences, rootKey);
+            Preference keyEditor = findPreference("extra_keys_editor");
+            if (keyEditor != null) keyEditor.setOnPreferenceClickListener(preference -> {
+                startActivity(new android.content.Intent(context, ExtraKeysEditorActivity.class));
+                return true;
+            });
 
             new Thread() {
                 @Override

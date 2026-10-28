@@ -311,4 +311,46 @@
     <string name="diagnostics_storage">Broad shared storage access: %1$s</string>
     <string name="diagnostics_notifications">App notifications: %1$s</string>
     <string name="diagnostics_clipboard">Clipboard MIME metadata: %1$s</string>
+    <string name="extra_keys_editor_title">Extra keys</string>
+    <string name="extra_keys_editor_settings_summary">Edit and preview the terminal keybar</string>
+    <string name="extra_keys_editor_loading">Loading extra-key settings…</string>
+    <string name="extra_keys_editor_load_failed">Cannot edit this layout. The file may be inaccessible, invalid, linked, or outside editor limits. Existing settings were not changed.</string>
+    <string name="extra_keys_editor_restore_conflict">The restored state could not be safely saved because the settings may have changed, the saved state was invalid, or a save was interrupted. Export the preview if needed, inspect the settings, and reopen the editor before saving.</string>
+    <string name="extra_keys_editor_explanation">Editing %1$s. Saving appends an extra-keys override and creates a backup. Concurrent shell edits can conflict.</string>
+    <string name="extra_keys_editor_presets">Presets</string>
+    <string name="extra_keys_editor_preset_confirm">Replace the current unsaved layout with this preset?</string>
+    <string name="extra_keys_editor_revert">Revert</string>
+    <string name="extra_keys_editor_import">Import</string>
+    <string name="extra_keys_editor_export">Export</string>
+    <string name="extra_keys_editor_import_confirm">Replace the unsaved layout with an imported JSON file? Nothing is saved to termux.properties until you tap Save.</string>
+    <string name="extra_keys_editor_picker_failed">No document picker is available.</string>
+    <string name="extra_keys_editor_transfer_failed">The document could not be opened. Try again after the editor finishes loading.</string>
+    <string name="extra_keys_editor_importing">Importing layout…</string>
+    <string name="extra_keys_editor_exporting">Exporting layout…</string>
+    <string name="extra_keys_editor_imported">Layout imported into the preview. Tap Save to apply it.</string>
+    <string name="extra_keys_editor_exported">Layout exported.</string>
+    <string name="extra_keys_editor_import_failed">Could not import this document. The preview was not changed.</string>
+    <string name="extra_keys_editor_export_failed">Export failed and the selected file may be incomplete. Check it before retrying.</string>
+    <string name="extra_keys_editor_save">Save</string>
+    <string name="extra_keys_editor_row">Row %1$d</string>
+    <string name="extra_keys_editor_macro_label">Macro: %1$s</string>
+    <string name="extra_keys_editor_popup_label">%1$s (popup)</string>
+    <string name="extra_keys_editor_key_description">Row %1$d, key %2$d: %3$s. Tap to edit or move.</string>
+    <string name="extra_keys_editor_add_key">Add key</string>
+    <string name="extra_keys_editor_remove_row">Remove row</string>
+    <string name="extra_keys_editor_remove_row_confirm">Remove this row and its keys from the unsaved layout?</string>
+    <string name="extra_keys_editor_add_row">Add row</string>
+    <string name="extra_keys_editor_limit">That action is outside the editor limits or available positions.</string>
+    <string name="extra_keys_editor_edit_json">Edit key JSON</string>
+    <string name="extra_keys_editor_json_hint">A key is a JSON string or an object with a key or macro. Macros can send multiple keys. Preserve any custom fields you want to keep.</string>
+    <string name="extra_keys_editor_invalid">Invalid extra-key configuration. Existing settings were not changed.</string>
+    <string name="extra_keys_editor_save_failed">Could not save extra keys</string>
+    <string name="extra_keys_editor_saved">Extra keys saved.</string>
+    <string name="extra_keys_editor_saved_backup">Extra keys saved. Backup: %1$s</string>
+    <string-array name="extra_keys_editor_actions">
+        <item>Move left</item><item>Move right</item><item>Move to previous row</item><item>Move to next row</item><item>Edit key JSON</item><item>Remove key</item>
+    </string-array>
+    <string-array name="extra_keys_editor_presets">
+        <item>Classic</item><item>Coding</item><item>Vim</item><item>Tmux</item><item>Compact</item>
+    </string-array>
 </resources>
