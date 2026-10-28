@@ -142,7 +142,7 @@ static int exchange(int fd, const char *request, int id, int hello, const unsign
     if (now < 0) { fprintf(stderr, "termux-control: clock unavailable\n"); return -1; }
     long long deadline = now + 5000;
     if (n == 0 || n > MAX_FRAME || all_write(fd, h, 4, deadline) || all_write(fd, request, n, deadline)) {
-        fprintf(stderr, "termux-control: connection failed or timed out\n"); return -1;
+        fprintf(stderr, "termux-control: connection failed or timed out\n"); return -2;
     }
     if (binary) {
         unsigned char header[4] = {(unsigned char)(binary_len >> 24), (unsigned char)(binary_len >> 16),
@@ -151,22 +151,24 @@ static int exchange(int fd, const char *request, int id, int hello, const unsign
         // the binary frame. Still try to read its structured response on send failure.
         if (all_write(fd, header, 4, deadline) || all_write(fd, binary, binary_len, deadline)) {
             if (all_read(fd, h, 4, deadline)) {
-                fprintf(stderr, "termux-control: connection failed or timed out\n"); return -1;
+                fprintf(stderr, "termux-control: connection failed or timed out\n"); return -2;
             }
         } else if (all_read(fd, h, 4, deadline)) {
-            fprintf(stderr, "termux-control: connection failed or timed out\n"); return -1;
+            fprintf(stderr, "termux-control: connection failed or timed out\n"); return -2;
         }
     } else if (all_read(fd, h, 4, deadline)) {
-        fprintf(stderr, "termux-control: connection failed or timed out\n"); return -1;
+        fprintf(stderr, "termux-control: connection failed or timed out\n"); return -2;
     }
     uint32_t len = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) | ((uint32_t)h[2] << 8) | h[3];
     if (len == 0 || len > MAX_FRAME) { fprintf(stderr, "termux-control: invalid response length\n"); return -1; }
     char *body = malloc((size_t)len + 1);
     if (!body) { fprintf(stderr, "termux-control: out of memory\n"); return -1; }
-    if (all_read(fd, body, len, deadline) || memchr(body, 0, len)) { free(body); fprintf(stderr, "termux-control: incomplete response\n"); return -1; }
+    if (all_read(fd, body, len, deadline)) { free(body); fprintf(stderr, "termux-control: incomplete response\n"); return -2; }
+    if (memchr(body, 0, len)) { free(body); fprintf(stderr, "termux-control: invalid response\n"); return -1; }
     body[len] = 0;
     int result = response_ok(body, id, hello);
-    if (result == 0) fprintf(stderr, "termux-control: server error: %s\n", body);
+    if (result == 0 && id == 6) fprintf(stderr, "termux-control: resume rejected\n");
+    else if (result == 0) fprintf(stderr, "termux-control: server error: %s\n", body);
     else if (result < 0) fprintf(stderr, "termux-control: invalid server response\n");
     else if (!hello && !response_out) puts(body);
     if (result == 1 && response_out) *response_out = body;
@@ -236,11 +238,12 @@ static int read_output_once(int fd, const char *session_id, uint64_t *position, 
             unsigned char header[4], data[MAX_FRAME];
             long long now = now_ms();
             if (now < 0 || all_read(fd, header, sizeof(header), now + 5000)) {
-                fprintf(stderr, "termux-control: incomplete output frame\n"); return -1;
+                fprintf(stderr, "termux-control: incomplete output frame\n"); return -2;
             }
             uint32_t size = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) | ((uint32_t)header[2] << 8) | header[3];
-            if (size != length || all_read(fd, data, size, now + 5000)) {
-                fprintf(stderr, "termux-control: invalid or incomplete output frame\n"); return -1;
+            if (size != length) { fprintf(stderr, "termux-control: invalid output frame\n"); return -1; }
+            if (all_read(fd, data, size, now + 5000)) {
+                fprintf(stderr, "termux-control: incomplete output frame\n"); return -2;
             }
             if (fwrite(data, 1, size, stdout) != size || fflush(stdout)) {
                 fprintf(stderr, "termux-control: cannot write output\n"); return -1;
@@ -251,13 +254,72 @@ static int read_output_once(int fd, const char *session_id, uint64_t *position, 
         return 0;
 }
 
-static int follow_output(int fd, const char *session_id) {
+static volatile sig_atomic_t attach_stop, attach_suspend;
+static int response_ack(const char *response, const char *field);
+static int connect_control(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) { perror("termux-control: socket"); return -1; }
+    struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) || setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) { perror("termux-control: timeout"); close(fd); return -1; }
+    struct sockaddr_un addr = { .sun_family = AF_UNIX }; memcpy(addr.sun_path, path, strlen(path) + 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+        int saved = errno;
+        long long now = now_ms();
+        if ((saved != EINPROGRESS && saved != EAGAIN) || now < 0 || ready(fd, POLLOUT, now + 5000)) {
+            if (saved != EINPROGRESS && saved != EAGAIN) errno = saved;
+            fprintf(stderr, "termux-control: cannot connect to local control socket: %s\n", strerror(errno)); close(fd); return -1;
+        }
+        int error = 0; socklen_t error_size = sizeof(error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size) || error != 0) {
+            if (error != 0) errno = error;
+            fprintf(stderr, "termux-control: cannot connect to local control socket: %s\n", strerror(errno)); close(fd); return -1;
+        }
+    }
+    struct ucred peer; socklen_t peer_size = sizeof(peer);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) || peer_size != sizeof(peer) || peer.uid != getuid()) {
+        fprintf(stderr, "termux-control: socket peer is not the current UID\n"); close(fd); return -1;
+    }
+    int handshake = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}", 1, 1, NULL, 0, NULL);
+    if (handshake != 0) { close(fd); return -1; }
+    return fd;
+}
+
+/* Retry only read-side transport failures: never replay an uncertain input write. */
+static int resume_output(int *fd, const char *path, const char *id, const char *token) {
+    close(*fd); *fd = -1;
+    long long now = now_ms();
+    if (now < 0) return -1;
+    long long deadline = now + 10000;
+    fprintf(stderr, "termux-control: reconnecting output subscription\n");
+    while (!attach_stop && !attach_suspend && (now = now_ms()) >= 0 && now < deadline) {
+        int next = connect_control(path);
+        if (next >= 0) {
+            char req[MAX_REQUEST] = ""; size_t used = 0;
+            if (append(req, sizeof(req), &used, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"session.output.resume\",\"params\":{\"id\":") ||
+                quoted(req, sizeof(req), &used, id) || append(req, sizeof(req), &used, ",\"token\":") ||
+                quoted(req, sizeof(req), &used, token) || append(req, sizeof(req), &used, "}}")) { close(next); return -1; }
+            char *response = NULL;
+            int status = exchange(next, req, 6, 0, NULL, 0, &response);
+            int ok = status == 0 && response_ack(response, "ok") == 0;
+            free(response);
+            if (ok) { *fd = next; fprintf(stderr, "termux-control: output subscription resumed\n"); return 0; }
+            close(next);
+            if (status == -1 || status == 0) return -1;
+        }
+        struct timespec delay = { .tv_sec = 0, .tv_nsec = 250000000 };
+        while (!attach_stop && !attach_suspend && nanosleep(&delay, &delay) && errno == EINTR) { }
+    }
+    fprintf(stderr, "termux-control: output resume failed or expired\n"); return -1;
+}
+
+static int follow_output(int *fd, const char *session_id, const char *path, const char *token) {
     uint64_t offset = 0;
     if (isatty(STDOUT_FILENO))
         fprintf(stderr, "termux-control: follow from a different session or redirect stdout to avoid an output loop\n");
     for (;;) {
         int received = 0;
-        int status = read_output_once(fd, session_id, &offset, &received);
+        int status = read_output_once(*fd, session_id, &offset, &received);
+        if (status == -2 && token && !resume_output(fd, path, session_id, token)) continue;
         if (status) return status;
         if (!received) {
             struct timespec delay = { .tv_sec = 0, .tv_nsec = 250000000 };
@@ -344,7 +406,6 @@ invalid:
     fprintf(stderr, "termux-control: target session is unavailable or session metadata is invalid\n"); return -1;
 }
 
-static volatile sig_atomic_t attach_stop, attach_suspend;
 static void attach_signal(int signal_number) {
     if (signal_number == SIGTSTP) attach_suspend = 1;
     else attach_stop = signal_number;
@@ -376,7 +437,7 @@ static int attach_resize(int fd, const char *id, unsigned columns, unsigned rows
     free(response);
     return status;
 }
-static int attach_loop(int fd, const char *id) {
+static int attach_loop(int *fd, const char *id, const char *path, const char *token) {
     struct termios saved, raw;
     if (tcgetattr(STDIN_FILENO, &saved)) { perror("termux-control: tcgetattr"); return -1; }
     raw = saved; cfmakeraw(&raw);
@@ -412,7 +473,7 @@ static int attach_loop(int fd, const char *id) {
         if (!ioctl(STDIN_FILENO, TIOCGWINSZ, &size) && size.ws_col >= 2 && size.ws_col <= 500 &&
             size.ws_row >= 2 && size.ws_row <= 250 && (last_columns != size.ws_col || last_rows != size.ws_row)) {
             last_columns = size.ws_col; last_rows = size.ws_row;
-            int status = attach_resize(fd, id, last_columns, last_rows);
+            int status = attach_resize(*fd, id, last_columns, last_rows);
             if (status < 0) { result = -1; break; }
             if (status > 0) fprintf(stderr, "termux-control: resize was rejected; local display may own the geometry\r\n");
         }
@@ -434,11 +495,15 @@ static int attach_loop(int fd, const char *id) {
                 }
                 if (c == 0x1d) escape = 1; else sendbuf[written++] = c;
             }
-            if (written && attach_write(fd, id, sendbuf, written)) { result = -1; break; }
+            if (written && attach_write(*fd, id, sendbuf, written)) { result = -1; break; }
             if (detach) break;
         } else if (ready_input > 0 && (input.revents & (POLLERR | POLLNVAL))) { result = -1; break; }
         int received = 0;
-        if (read_output_once(fd, id, &offset, &received)) { result = -1; break; }
+        int read_status = read_output_once(*fd, id, &offset, &received);
+        if (read_status == -2 && token && !attach_stop && !resume_output(fd, path, id, token)) {
+            last_columns = last_rows = 0; continue;
+        }
+        if (read_status) { result = -1; break; }
         backlog = received;
     }
     if (tcsetattr(STDIN_FILENO, TCSANOW, &saved)) { perror("termux-control: cannot restore terminal"); result = -1; }
@@ -448,12 +513,16 @@ static int attach_loop(int fd, const char *id) {
 }
 
 static void usage(void) {
-    fprintf(stderr, "Usage: termux-control [--socket PATH] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE|follow ID|attach ID\n");
+    fprintf(stderr, "Usage: termux-control [--socket PATH] [--resume] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE|follow ID|attach ID\n");
 }
 int main(int argc, char **argv) {
     const char *path = getenv("TERMUX_CONTROL_SOCKET"); char default_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
-    int i = 1;
-    if (i < argc && !strcmp(argv[i], "--socket")) { if (++i >= argc) { usage(); return 2; } path = argv[i++]; }
+    int i = 1, resume = 0;
+    while (i < argc && argv[i][0] == '-') {
+        if (!strcmp(argv[i], "--socket")) { if (++i >= argc) { usage(); return 2; } path = argv[i++]; }
+        else if (!strcmp(argv[i], "--resume")) { resume = 1; ++i; }
+        else { usage(); return 2; }
+    }
     if (!path || !*path) {
         const char *home = getenv("HOME");
         if (!home || snprintf(default_path, sizeof(default_path), "%s/../control-ipc/control.sock", home) >= (int)sizeof(default_path)) {
@@ -473,6 +542,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "write") && count == 1) method = "session.write";
     else if ((!strcmp(cmd, "follow") || !strcmp(cmd, "attach")) && count == 1) method = "session.output.subscribe";
     else { usage(); return 2; }
+    if (resume && strcmp(cmd, "follow") && strcmp(cmd, "attach")) { usage(); return 2; }
     unsigned char binary[MAX_FRAME + 1];
     size_t binary_len = 0;
     if (!strcmp(cmd, "write")) {
@@ -497,35 +567,14 @@ int main(int argc, char **argv) {
         if (append(req, sizeof(req), &used, dims)) goto too_long;
         if (!offset && count == 3) { if (append(req, sizeof(req), &used, ",\"name\":") || quoted(req, sizeof(req), &used, argv[i + 2])) goto too_long; }
     }
+    if (resume && append(req, sizeof(req), &used, ",\"resumable\":true")) goto too_long;
     if (append(req, sizeof(req), &used, "}}")) goto too_long;
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (fd < 0) { perror("termux-control: socket"); return 1; }
-    struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) || setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) { perror("termux-control: timeout"); close(fd); return 1; }
-    struct sockaddr_un addr = { .sun_family = AF_UNIX }; memcpy(addr.sun_path, path, strlen(path) + 1);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
-        int saved = errno;
-        long long now = now_ms();
-        if ((saved != EINPROGRESS && saved != EAGAIN) || now < 0 || ready(fd, POLLOUT, now + 5000)) {
-            if (saved != EINPROGRESS && saved != EAGAIN) errno = saved;
-            fprintf(stderr, "termux-control: cannot connect to local control socket: %s\n", strerror(errno)); close(fd); return 1;
-        }
-        int error = 0; socklen_t error_size = sizeof(error);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size) || error != 0) {
-            if (error != 0) errno = error;
-            fprintf(stderr, "termux-control: cannot connect to local control socket: %s\n", strerror(errno)); close(fd); return 1;
-        }
-    }
-    struct ucred peer; socklen_t peer_size = sizeof(peer);
-    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) || peer_size != sizeof(peer) || peer.uid != getuid()) {
-        fprintf(stderr, "termux-control: socket peer is not the current UID\n"); close(fd); return 1;
-    }
-    int handshake = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}", 1, 1, NULL, 0, NULL);
-    if (handshake != 0) { close(fd); return 1; }
+    int fd = connect_control(path);
+    if (fd < 0) return 1;
     int result;
     if (!strcmp(cmd, "attach") && verify_attach_terminal(fd, argv[i])) { close(fd); return 1; }
     if (!strcmp(cmd, "follow") || !strcmp(cmd, "attach")) {
-        char *response = NULL;
+        char *response = NULL; char token[65] = "";
         result = exchange(fd, req, 2, 0, NULL, 0, &response);
         if (result == 0) {
             const char *end = response;
@@ -534,11 +583,27 @@ int main(int argc, char **argv) {
             else {
                 ws(&end); root.end = end;
                 if (member(root, "result", &object) != 1 || member(object, "ok", &ok) != 1 || !equals(ok, "true")) result = -1;
+                if (!result && resume) {
+                    struct span t;
+                    if (member(object, "resumeToken", &t) != 1 || t.end - t.start != 66 || *t.start != '"' || t.end[-1] != '"') result = -1;
+                    else {
+                        for (int n = 0; n < 64; ++n) if (!((t.start[n+1] >= '0' && t.start[n+1] <= '9') || (t.start[n+1] >= 'a' && t.start[n+1] <= 'f'))) result = -1;
+                        if (!result) memcpy(token, t.start + 1, 64);
+                    }
+                }
             }
             if (result != 0) fprintf(stderr, "termux-control: invalid subscription response\n");
         }
         free(response);
-        if (result == 0) result = !strcmp(cmd, "attach") ? attach_loop(fd, argv[i]) : follow_output(fd, argv[i]);
+        if (result == 0) result = !strcmp(cmd, "attach") ? attach_loop(&fd, argv[i], path, resume ? token : NULL) : follow_output(&fd, argv[i], path, resume ? token : NULL);
+        if (!result && resume && fd >= 0) {
+            char unsubscribe[MAX_REQUEST] = ""; size_t used_unsub = 0;
+            if (!append(unsubscribe, sizeof(unsubscribe), &used_unsub, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"session.output.unsubscribe\",\"params\":{\"id\":") &&
+                !quoted(unsubscribe, sizeof(unsubscribe), &used_unsub, argv[i]) && !append(unsubscribe, sizeof(unsubscribe), &used_unsub, "}}")) {
+                char *ignored = NULL; (void)exchange(fd, unsubscribe, 7, 0, NULL, 0, &ignored); free(ignored);
+            }
+        }
+        memset(token, 0, sizeof(token));
     } else {
         result = exchange(fd, req, 2, 0, binary_len ? binary : NULL, binary_len, NULL);
     }
