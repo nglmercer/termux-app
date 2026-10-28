@@ -8,6 +8,8 @@ import java.io.OutputStream;
 /** Four-byte big-endian length-prefixed frames. This class does not open a transport. */
 public final class FrameCodec {
     public static final int MAX_FRAME_BYTES = 1024 * 1024;
+    /** Optional transport hook to start an absolute deadline for each frame. */
+    interface FrameStart { void beginFrame() throws IOException; }
     private final int mLimit;
 
     public FrameCodec(int limit) {
@@ -17,6 +19,7 @@ public final class FrameCodec {
 
     /** Returns null only for EOF before a new frame; partial headers and bodies are errors. */
     public byte[] read(InputStream input) throws IOException {
+        if (input instanceof FrameStart) ((FrameStart) input).beginFrame();
         int first = input.read();
         if (first < 0) return null;
         int second = readByte(input);
