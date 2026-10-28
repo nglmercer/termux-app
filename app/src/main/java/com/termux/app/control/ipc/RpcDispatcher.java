@@ -50,11 +50,14 @@ public final class RpcDispatcher {
     }
 
     Result dispatchResult(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary) {
+        return dispatchResult(request, scopes, binary, null);
+    }
+    Result dispatchResult(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary, String newToken) {
         if (request == null) return json(error(null, -32600, "Invalid Request"));
         try {
             mNegotiation.accept(request);
             if (!request.hasId && request.method.startsWith("session.output.")) return json(null);
-            Object result = invoke(request, scopes, binary);
+            Object result = invoke(request, scopes, binary, newToken);
             if (!request.hasId) return json(null);
             OutputValue output = result instanceof OutputValue ? (OutputValue) result : null;
             byte[] response = response(request.id, output == null ? result : output.metadata, null, 0);
@@ -76,7 +79,7 @@ public final class RpcDispatcher {
 
     public boolean isNegotiated() { return mNegotiation.isReady(); }
 
-    private Object invoke(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary)
+    private Object invoke(RpcRequestParser.Request request, Set<ControlCore.Scope> scopes, byte[] binary, String newToken)
         throws ControlCore.ControlException, BadParameters, UnknownMethod {
         switch (request.method) {
             case "system.hello":
@@ -88,6 +91,7 @@ public final class RpcDispatcher {
                     !scopes.contains(ControlCore.Scope.SESSIONS_CLOSE)) methods.remove("session.close");
                 if (mOutput != null && scopes != null && scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT)) {
                     methods.add("session.output.subscribe"); methods.add("session.output.read"); methods.add("session.output.unsubscribe");
+                    if (scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME)) methods.add("session.output.resume");
                 }
                 return Collections.singletonMap("methods", methods);
             case "session.list":
@@ -122,9 +126,26 @@ public final class RpcDispatcher {
                 return Collections.singletonMap("ok", true);
             }
             case "session.output.subscribe": {
-                Map<?, ?> p = parameters(request.params, "id");
+                Map<?, ?> p = parameters(request.params, "id", "resumable");
                 if (mOutput == null) throw new UnknownMethod();
+                Object requested = p.get("resumable");
+                if (p.containsKey("resumable") && !(requested instanceof Boolean)) throw new BadParameters();
+                if (Boolean.TRUE.equals(requested)) {
+                    if (scopes == null || !scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT_RESUME))
+                        throw new ControlCore.ControlException(ControlCore.Error.DENIED);
+                    if (newToken == null) throw new ControlCore.ControlException(ControlCore.Error.UNAVAILABLE);
+                    mOutput.get().subscribeResumable(string(p, "id"), newToken);
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    result.put("ok", true); result.put("resumeToken", newToken);
+                    return result;
+                }
                 mOutput.get().subscribe(string(p, "id"));
+                return Collections.singletonMap("ok", true);
+            }
+            case "session.output.resume": {
+                Map<?, ?> p = parameters(request.params, "id", "token");
+                if (mOutput == null) throw new UnknownMethod();
+                mOutput.get().resume(string(p, "id"), string(p, "token"));
                 return Collections.singletonMap("ok", true);
             }
             case "session.output.unsubscribe": {

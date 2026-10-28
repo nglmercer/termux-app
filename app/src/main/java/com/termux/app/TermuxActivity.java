@@ -947,7 +947,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     service.isLocalControlRunning() ? (service.localControlAllowsSessionWrite() ?
                         R.string.local_control_running_write : R.string.local_control_running_read) : R.string.local_control_starting) +
                     (service.localControlAllowsOutput() ? "\n\n" + getString(R.string.local_control_output_enabled) : "") +
-                    (service.isSafeControlCloseEnabled() ? "\n\n" + getString(R.string.local_control_close_enabled) : ""))
+                    (service.isSafeControlCloseEnabled() ? "\n\n" + getString(R.string.local_control_close_enabled) : "") +
+                    (service.localControlAllowsOutputResume() ? "\n\n" + getString(R.string.local_control_resume_enabled) : ""))
                 .setPositiveButton(R.string.local_control_stop, (dialog, which) -> {
                     service.stopLocalControl();
                     showToast(getString(R.string.local_control_stopping), false);
@@ -957,22 +958,29 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
         android.widget.CheckBox output = new android.widget.CheckBox(this);
         output.setText(R.string.local_control_output_checkbox);
+        android.widget.CheckBox resume = new android.widget.CheckBox(this);
+        resume.setText(R.string.local_control_resume_checkbox);
+        resume.setEnabled(false);
+        output.setOnCheckedChangeListener((button, checked) -> {
+            resume.setEnabled(checked);
+            if (!checked) resume.setChecked(false);
+        });
         android.widget.CheckBox close = new android.widget.CheckBox(this);
         close.setText(R.string.local_control_close_checkbox);
         android.widget.LinearLayout options = new android.widget.LinearLayout(this);
         options.setOrientation(android.widget.LinearLayout.VERTICAL);
-        options.addView(output); options.addView(close);
+        options.addView(output); options.addView(resume); options.addView(close);
         new AlertDialog.Builder(this)
             .setTitle(R.string.action_local_control)
             .setMessage(R.string.local_control_explanation)
             .setView(options)
-            .setPositiveButton(R.string.local_control_read_only, (dialog, which) -> enableLocalControl(service, false, output.isChecked(), close.isChecked()))
-            .setNeutralButton(R.string.local_control_read_write, (dialog, which) -> enableLocalControl(service, true, output.isChecked(), close.isChecked()))
+            .setPositiveButton(R.string.local_control_read_only, (dialog, which) -> enableLocalControl(service, false, output.isChecked(), close.isChecked(), resume.isChecked()))
+            .setNeutralButton(R.string.local_control_read_write, (dialog, which) -> enableLocalControl(service, true, output.isChecked(), close.isChecked(), resume.isChecked()))
             .setNegativeButton(android.R.string.cancel, null).show();
     }
 
-    private void enableLocalControl(TermuxService service, boolean write, boolean output, boolean close) {
-        EnumSet<ControlCore.Scope> scopes = com.termux.app.control.LocalControlOptions.scopes(write, output, close);
+    private void enableLocalControl(TermuxService service, boolean write, boolean output, boolean close, boolean resume) {
+        EnumSet<ControlCore.Scope> scopes = com.termux.app.control.LocalControlOptions.scopes(write, output, close, resume);
         WeakReference<TermuxActivity> activity = new WeakReference<>(this);
         final boolean requested;
         try {

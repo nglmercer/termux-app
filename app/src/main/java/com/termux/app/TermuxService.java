@@ -136,6 +136,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
                     @Override public com.termux.terminal.OutputReplayBuffer buffer() { return buffer; }
                     @Override public void close() { session.disableOutputReplay(); }
                 };
+            }, android.os.SystemClock::elapsedRealtime, (task, delay) -> {
+                if (!mHandler.postDelayed(task, delay)) throw new java.util.concurrent.RejectedExecutionException();
+                return () -> mHandler.removeCallbacks(task);
             });
         android.os.Handler controlHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         mControlDispatch = new com.termux.app.control.ipc.ServiceThreadDispatch(task -> {
@@ -925,16 +928,20 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
             throw new IllegalStateException("Control service unavailable on this thread");
         if (scopes == null || mLocalControlServer != null) return false;
         boolean close = scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_CLOSE);
+        boolean resume = scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_OUTPUT_RESUME);
         if (close && !scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_WRITE)) return false;
+        if (resume && !scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_OUTPUT)) return false;
         com.termux.app.control.ipc.LocalControlServer server =
             new com.termux.app.control.ipc.LocalControlServer(this, mControlCore, mControlDispatch, scopes, stopped ->
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
                     if (mLocalControlServer == stopped) {
                         mLocalControlServer = null;
                         if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+                        if (mControlAvailable) mOutputSubscriptions.setRetentionEnabled(false);
                     }
                 }), mOutputSubscriptions);
         setSafeControlCloseEnabled(close);
+        mOutputSubscriptions.setRetentionEnabled(resume);
         mLocalControlServer = server;
         try { new Thread(() -> {
             try {
@@ -947,6 +954,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
                     if (mLocalControlServer == server) {
                         if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+                        if (mControlAvailable) mOutputSubscriptions.setRetentionEnabled(false);
                         if (callback != null) callback.onResult(false);
                     }
                 });
@@ -956,6 +964,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         catch (RuntimeException e) {
             mLocalControlServer = null;
             if (mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+            mOutputSubscriptions.setRetentionEnabled(false);
             return false;
         }
         return true;
@@ -967,6 +976,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
             throw new IllegalStateException("Control service stop must run on the main thread");
         com.termux.app.control.ipc.LocalControlServer server = mLocalControlServer;
         if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+        if (mControlAvailable) mOutputSubscriptions.setRetentionEnabled(false);
         if (server != null) server.requestStop();
     }
 
@@ -986,6 +996,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
     public boolean localControlAllowsOutput() {
         return mLocalControlServer != null && mLocalControlServer.allowsOutput();
+    }
+
+    public boolean localControlAllowsOutputResume() {
+        return mLocalControlServer != null && mLocalControlServer.allowsOutputResume();
     }
 
     /** Local opt-in for new sessions; no remote caller may grant itself this setting. */
