@@ -252,6 +252,10 @@
     <string name="action_process_snapshot">Termux processes</string>
     <string name="process_snapshot_search">Search process name or PID</string>
     <string name="process_snapshot_sort">Sort processes</string>
+    <string name="process_snapshot_scope">Filter processes</string>
+    <string-array name="process_snapshot_scopes">
+        <item>Termux sessions and tasks</item><item>Session descendants</item><item>Background task descendants</item><item>All visible same-UID processes</item>
+    </string-array>
     <string name="process_snapshot_empty_search">No visible processes match.</string>
     <string-array name="process_snapshot_sorts">
         <item>PID</item><item>Name</item><item>CPU (highest first)</item><item>RSS (highest first)</item>
@@ -259,7 +263,7 @@
     <string name="process_snapshot_loading">Reading Termux processes…</string>
     <string name="process_snapshot_failed">Could not start process snapshot.</string>
     <string name="process_snapshot_changed">Sessions changed while reading. Refresh to try again.</string>
-    <string name="process_snapshot_caveat">Read-only snapshot of visible same-UID session and background-task descendants. Android restrictions, process churn and PID reuse can make this incomplete or stale. RSS includes shared pages. CPU is the percentage of one core between refreshes and may exceed 100%.</string>
+    <string name="process_snapshot_caveat">Read-only snapshot of visible same-UID processes. Session and task categories are best-effort descendant matches. Android restrictions, process churn and PID reuse can make this incomplete or stale. RSS includes shared pages. CPU is the percentage of one core between refreshes and may exceed 100%.</string>
     <string name="process_snapshot_incomplete">Some process data was unavailable or the scan limit was reached. Process roots missing: %1$d.</string>
     <string name="process_snapshot_unknown_tasks">Running background tasks without an available PID: %1$d.</string>
     <string name="process_snapshot_empty">No Termux processes were visible.</string>

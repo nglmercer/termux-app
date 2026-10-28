@@ -204,7 +204,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private long mPreviousProcessSnapshotTime;
     private android.widget.TextView mProcessText;
     private EditText mProcessSearch;
-    private android.widget.Spinner mProcessSort;
+    private android.widget.Spinner mProcessSort, mProcessScope;
     private ProcessTable mProcessTable;
     private String mProcessHeader;
 
@@ -835,6 +835,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mProcessSort.setAdapter(sorts);
         mProcessSort.setContentDescription(getString(R.string.process_snapshot_sort));
         panel.addView(mProcessSort);
+        mProcessScope = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<CharSequence> scopes = android.widget.ArrayAdapter.createFromResource(this,
+            R.array.process_snapshot_scopes, android.R.layout.simple_spinner_item);
+        scopes.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        mProcessScope.setAdapter(scopes);
+        mProcessScope.setContentDescription(getString(R.string.process_snapshot_scope));
+        panel.addView(mProcessScope);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         mProcessText = new android.widget.TextView(this);
         mProcessText.setText(R.string.process_snapshot_loading);
@@ -856,7 +863,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
             mPreviousProcessSnapshot = null;
             mPreviousProcessRoots = null;
-            mProcessTable = null; mProcessHeader = null; mProcessText = null; mProcessSearch = null; mProcessSort = null;
+            mProcessTable = null; mProcessHeader = null; mProcessText = null; mProcessSearch = null; mProcessSort = null; mProcessScope = null;
         });
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> loadProcessSnapshot());
@@ -874,6 +881,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             public void afterTextChanged(android.text.Editable s) { }
         });
         mProcessSort.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) { renderProcessTable(); }
+            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+        });
+        mProcessScope.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) { renderProcessTable(); }
             public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
@@ -919,7 +930,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 } catch (RuntimeException ignored) { }
                 final long ticksPerSecond = tickValue, pageSize = pageValue;
                 ProcessTable prepared;
-                try { prepared = snapshot == null ? null : new ProcessTable(snapshot, prior, sampledAt - priorTime, ticksPerSecond, pageSize); }
+                try { prepared = snapshot == null ? null : new ProcessTable(snapshot, prior, sampledAt - priorTime, ticksPerSecond, pageSize,
+                    monitorRoots.sessions, monitorRoots.tasks); }
                 catch (RuntimeException e) { prepared = null; }
                 final ProcessTable table = prepared;
                 final DeviceSnapshot device = DeviceSnapshot.collect(appContext);
@@ -936,8 +948,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     } else {
                         TermuxService currentService = current.getTermuxService();
                         TermuxService.MonitorRoots currentRoots = currentService == null ? null : currentService.getMonitorRoots();
-                        if (currentRoots == null || !roots.equals(currentRoots.pids) ||
-                            monitorRoots.unknownTaskPids != currentRoots.unknownTaskPids) {
+                        if (currentRoots == null || !monitorRoots.sessions.equals(currentRoots.sessions) ||
+                            !monitorRoots.tasks.equals(currentRoots.tasks) || monitorRoots.unknownTaskPids != currentRoots.unknownTaskPids) {
                             current.setProcessMessage(current.getString(R.string.process_snapshot_changed));
                         } else {
                             current.showProcessSnapshot(snapshot, table, device, roots, monitorRoots.unknownTaskPids, sampledAt);
@@ -985,11 +997,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void renderProcessTable() {
-        if (mProcessText == null || mProcessTable == null || mProcessSearch == null || mProcessSort == null) return;
+        if (mProcessText == null || mProcessTable == null || mProcessSearch == null || mProcessSort == null || mProcessScope == null) return;
         int position = mProcessSort.getSelectedItemPosition();
         ProcessTable.Sort[] sorts = ProcessTable.Sort.values();
         ProcessTable.Sort sort = position >= 0 && position < sorts.length ? sorts[position] : ProcessTable.Sort.PID;
-        java.util.List<ProcessTable.Row> rows = mProcessTable.select(mProcessSearch.getText().toString(), sort);
+        ProcessTable.Scope[] scopes = ProcessTable.Scope.values();
+        int scopePosition = mProcessScope.getSelectedItemPosition();
+        ProcessTable.Scope scope = scopePosition >= 0 && scopePosition < scopes.length ? scopes[scopePosition] : ProcessTable.Scope.OWNED;
+        java.util.List<ProcessTable.Row> rows = mProcessTable.select(mProcessSearch.getText().toString(), sort, scope);
         StringBuilder text = new StringBuilder(mProcessHeader);
         if (rows.isEmpty()) text.append("\n\n").append(getString(R.string.process_snapshot_empty_search));
         int count = Math.min(rows.size(), 100);
