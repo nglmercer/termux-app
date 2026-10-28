@@ -240,6 +240,7 @@
     <string name="extra_keys_editor_settings_summary">Edit and preview the terminal keybar</string>
     <string name="extra_keys_editor_loading">Loading extra-key settings…</string>
     <string name="extra_keys_editor_load_failed">Cannot edit this layout. The file may be inaccessible, invalid, linked, or outside editor limits. Existing settings were not changed.</string>
+    <string name="extra_keys_editor_restore_conflict">The restored state could not be safely saved because the settings may have changed, the saved state was invalid, or a save was interrupted. Export the preview if needed, inspect the settings, and reopen the editor before saving.</string>
     <string name="extra_keys_editor_explanation">Editing %1$s. Saving appends an extra-keys override and creates a backup. Concurrent shell edits can conflict.</string>
     <string name="extra_keys_editor_presets">Presets</string>
     <string name="extra_keys_editor_preset_confirm">Replace the current unsaved layout with this preset?</string>

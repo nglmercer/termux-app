@@ -60,6 +60,23 @@ public class ExtraKeyPropertyStoreInstrumentedTest {
         catch (ExtraKeyPropertyStore.ConflictException expected) { }
         assertArrayEquals("other=1\n".getBytes(StandardCharsets.UTF_8), read(missing));
     }
+    @Test public void recoveryFingerprintDetectsContentAndFileIdentityChanges() throws Exception {
+        File file = new File(directory, "termux.properties");
+        byte[] contents = "a=1\n".getBytes(StandardCharsets.UTF_8);
+        byte[] absent = ExtraKeyPropertyStore.read(file).fingerprint();
+        write(file, contents);
+        byte[] first = ExtraKeyPropertyStore.read(file).fingerprint();
+        assertFalse(java.util.Arrays.equals(absent, first));
+        assertArrayEquals(first, ExtraKeyPropertyStore.read(file).fingerprint());
+        write(file, "a=2\n".getBytes(StandardCharsets.UTF_8));
+        assertFalse(java.util.Arrays.equals(first, ExtraKeyPropertyStore.read(file).fingerprint()));
+        File replacement = new File(directory, "replacement");
+        write(replacement, contents);
+        assertTrue(replacement.renameTo(file));
+        assertFalse(java.util.Arrays.equals(first, ExtraKeyPropertyStore.read(file).fingerprint()));
+        assertFalse(java.util.Arrays.equals(ExtraKeyPropertyStore.read(file).fingerprint(),
+            ExtraKeyPropertyStore.read(new File(directory, "other")).fingerprint()));
+    }
     @Test public void createsNewFilePrivatelyAndRejectsLinks() throws Exception {
         File fresh = new File(directory, "new.properties");
         ExtraKeyPropertyStore.Snapshot absent = ExtraKeyPropertyStore.read(fresh);
