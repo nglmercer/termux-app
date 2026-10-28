@@ -33,6 +33,7 @@ import com.termux.shared.termux.terminal.TermuxTerminalSessionClientBase;
 import com.termux.shared.termux.TermuxConstants;
 import com.termux.app.TermuxService;
 import com.termux.shared.termux.settings.properties.TermuxPropertyConstants;
+import com.termux.shared.termux.settings.properties.ClipboardImageLimits;
 import com.termux.shared.termux.terminal.io.BellHandler;
 import com.termux.shared.logger.Logger;
 import com.termux.terminal.TerminalColors;
@@ -65,10 +66,12 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         final String sessionHandle;
         final List<File> files;
         final int errorMessage;
-        ImageImportResult(String sessionHandle, List<File> files, int errorMessage) {
+        final ClipboardImageLimits limits;
+        ImageImportResult(String sessionHandle, List<File> files, int errorMessage, ClipboardImageLimits limits) {
             this.sessionHandle = sessionHandle;
             this.files = files;
             this.errorMessage = errorMessage;
+            this.limits = limits;
         }
     }
 
@@ -304,18 +307,25 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
 
     /** On success owns the release callback until the I/O worker has finished with the URI. */
     public boolean importClipboardImages(TerminalSession target, List<Uri> uris, Runnable releasePermission) {
+        if (target == null || uris == null || releasePermission == null) return false;
+        final ClipboardImageLimits limits;
+        try { limits = mActivity.getProperties().getClipboardImageLimits(); }
+        catch (RuntimeException e) {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_image_failed), true);
+            return false;
+        }
+        final List<Uri> selectedUris = new ArrayList<>(uris);
         if (!IMAGE_IMPORT_IN_PROGRESS.compareAndSet(false, true)) {
             mActivity.showToast(mActivity.getString(R.string.clipboard_image_busy), true);
             return false;
         }
         final Context context = mActivity.getApplicationContext();
         final String sessionHandle = target.mHandle;
-        final List<Uri> selectedUris = new ArrayList<>(uris);
         Thread worker = new Thread(() -> {
             List<File> files = null;
             int errorMessage = R.string.clipboard_image_failed;
             try {
-                files = ClipboardImageImporter.importImages(context, selectedUris);
+                files = ClipboardImageImporter.importImages(context, selectedUris, limits);
             } catch (ImageImportException e) {
                 switch (e.getReason()) {
                     case ACCESS: errorMessage = R.string.clipboard_image_access_failed; break;
@@ -330,7 +340,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             } finally {
                 try { releasePermission.run(); } catch (RuntimeException ignored) { }
             }
-            final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage);
+            final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage, limits);
             new Handler(Looper.getMainLooper()).post(() -> {
                 sPendingImageResult = result;
                 TermuxTerminalSessionActivityClient client = sVisibleImageClient.get();
@@ -356,7 +366,9 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         sPendingImageResult = null;
         IMAGE_IMPORT_IN_PROGRESS.set(false);
         if (result.files == null) {
-            mActivity.showToast(mActivity.getString(result.errorMessage), true);
+            mActivity.showToast(result.errorMessage == R.string.clipboard_image_size_limit ?
+                mActivity.getString(result.errorMessage, result.limits.fileMiB, result.limits.batchMiB) :
+                mActivity.getString(result.errorMessage), true);
         } else if (!result.sessionHandle.equals(target.mHandle) || !target.isRunning() || target.getEmulator() == null) {
             mActivity.showToast(mActivity.getString(R.string.clipboard_image_session_changed, result.files.get(0).getParent()), true);
         } else if (target.getEmulator().tryPaste(ClipboardImageImporter.quotePaths(result.files))) {
