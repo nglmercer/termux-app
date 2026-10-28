@@ -33,7 +33,7 @@ public final class ExtraKeyPropertyStore {
         SaveResult(File backup) { this.backup = backup; }
     }
     public static final class ConflictException extends IOException {
-        ConflictException() { super("Properties changed since the editor opened"); }
+        public ConflictException() { super("Properties changed since the editor opened"); }
     }
     /** A write may have reached disk; check the target before retrying. */
     public static final class SaveUncertainException extends IOException {

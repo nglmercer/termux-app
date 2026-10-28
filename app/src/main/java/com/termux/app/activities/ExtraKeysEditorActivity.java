@@ -1,0 +1,286 @@
+package com.termux.app.activities;
+
+import android.app.AlertDialog;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.InputType;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.termux.R;
+import com.termux.app.extrakeys.ExtraKeyLayout;
+import com.termux.app.extrakeys.ExtraKeyPropertyStore;
+import com.termux.shared.settings.properties.SharedProperties;
+import com.termux.shared.termux.TermuxConstants;
+import com.termux.shared.termux.extrakeys.ExtraKeysConstants;
+import com.termux.shared.termux.extrakeys.ExtraKeysInfo;
+import com.termux.shared.termux.settings.properties.TermuxPropertyConstants;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
+import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** Explicit, local editor for existing extra-key configuration. */
+public final class ExtraKeysEditorActivity extends AppCompatActivity {
+    private static final AtomicBoolean RELOAD_NEEDED = new AtomicBoolean();
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private LinearLayout content;
+    private TextView status;
+    private Button save;
+    private ExtraKeyLayout layout;
+    private ExtraKeyPropertyStore.Snapshot snapshot;
+    private String originalLayout;
+    private boolean busy, saving, saveBlocked;
+
+    public static boolean consumeReloadNeeded() { return RELOAD_NEEDED.getAndSet(false); }
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        setTitle(R.string.extra_keys_editor_title);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (12 * getResources().getDisplayMetrics().density);
+        root.setPadding(pad, pad, pad, pad);
+        status = new TextView(this); status.setText(R.string.extra_keys_editor_loading); root.addView(status);
+        ScrollView scroll = new ScrollView(this);
+        content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout actions = new LinearLayout(this);
+        Button presets = button(R.string.extra_keys_editor_presets, v -> choosePreset());
+        Button revert = button(R.string.extra_keys_editor_revert, v -> revert());
+        save = button(R.string.extra_keys_editor_save, v -> save()); save.setEnabled(false);
+        actions.addView(presets); actions.addView(revert); actions.addView(save); root.addView(actions);
+        setContentView(root);
+        load();
+    }
+
+    private Button button(int label, View.OnClickListener listener) {
+        Button button = new Button(this); button.setText(label); button.setOnClickListener(listener); return button;
+    }
+
+    private static File activeFile() {
+        return SharedProperties.getPropertiesFileFromList(TermuxConstants.TERMUX_PROPERTIES_FILE_PATHS_LIST, "ExtraKeysEditor");
+    }
+
+    /** Reject redirected configuration directories; the store also protects the final file. */
+    private static void validateParent(File file) throws IOException {
+        File home = new File(TermuxConstants.TERMUX_HOME_DIR_PATH).getCanonicalFile();
+        File expected;
+        if (file.equals(TermuxConstants.TERMUX_PROPERTIES_PRIMARY_FILE)) expected = new File(home, ".termux");
+        else if (file.equals(TermuxConstants.TERMUX_PROPERTIES_SECONDARY_FILE)) expected = new File(home, ".config/termux");
+        else throw new IOException("Unexpected properties path");
+        if (!file.getParentFile().getCanonicalFile().equals(expected)) throw new IOException("Redirected configuration directory");
+    }
+
+    private static String layoutFrom(byte[] bytes) throws IOException {
+        Properties properties = new Properties();
+        try (InputStreamReader reader = new InputStreamReader(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8)) {
+            properties.load(reader);
+        } catch (IllegalArgumentException e) { throw new IOException("Invalid properties", e); }
+        return properties.getProperty(TermuxPropertyConstants.KEY_EXTRA_KEYS, TermuxPropertyConstants.DEFAULT_IVALUE_EXTRA_KEYS);
+    }
+
+    private void load() {
+        busy = true;
+        WeakReference<ExtraKeysEditorActivity> ref = new WeakReference<>(this);
+        Handler handler = main;
+        io.execute(() -> {
+            ExtraKeyPropertyStore.Snapshot result = null; ExtraKeyLayout parsed = null; String original = null;
+            try {
+                File file = activeFile();
+                if (file == null) {
+                    file = TermuxConstants.TERMUX_PROPERTIES_PRIMARY_FILE;
+                    validateParent(file);
+                    File parent = file.getParentFile();
+                    if (!parent.isDirectory() && !parent.mkdir()) throw new IOException("Cannot create configuration directory");
+                }
+                validateParent(file);
+                result = ExtraKeyPropertyStore.read(file);
+                original = layoutFrom(result.bytes());
+                parsed = ExtraKeyLayout.parse(original);
+                new ExtraKeysInfo(parsed.toJson(), "default", ExtraKeysConstants.CONTROL_CHARS_ALIASES);
+            } catch (Exception ignored) { }
+            final ExtraKeyPropertyStore.Snapshot loaded = result;
+            final ExtraKeyLayout model = parsed;
+            final String initial = original;
+            handler.post(() -> {
+                ExtraKeysEditorActivity current = ref.get();
+                if (current == null || current.isFinishing() || current.isDestroyed()) return;
+                current.busy = false;
+                if (loaded == null || model == null) {
+                    current.saveBlocked = true; current.status.setText(R.string.extra_keys_editor_load_failed); return;
+                }
+                current.snapshot = loaded; current.layout = model; current.originalLayout = initial;
+                current.status.setText(current.getString(R.string.extra_keys_editor_explanation, loaded.file().getAbsolutePath()));
+                current.render();
+            });
+        });
+    }
+
+    private void render() {
+        if (layout == null) return;
+        content.removeAllViews();
+        for (int row = 0; row < layout.rowCount(); row++) {
+            final int r = row;
+            TextView label = new TextView(this); label.setText(getString(R.string.extra_keys_editor_row, row + 1)); content.addView(label);
+            HorizontalScrollView scroll = new HorizontalScrollView(this);
+            LinearLayout keys = new LinearLayout(this);
+            for (int index = 0; index < layout.keyCount(row); index++) {
+                final int i = index;
+                String labelText = keyLabel(layout.key(row, index));
+                Button key = new Button(this); key.setText(labelText); key.setContentDescription(getString(R.string.extra_keys_editor_key_description, row + 1, index + 1, labelText));
+                key.setOnClickListener(v -> editKey(r, i)); keys.addView(key);
+            }
+            scroll.addView(keys); content.addView(scroll);
+            LinearLayout rowActions = new LinearLayout(this);
+            rowActions.addView(button(R.string.extra_keys_editor_add_key, v -> addKey(r)));
+            rowActions.addView(button(R.string.extra_keys_editor_remove_row, v -> removeRow(r)));
+            content.addView(rowActions);
+        }
+        Button addRow = button(R.string.extra_keys_editor_add_row, v -> {
+            if (busy) return;
+            try { layout.addRow(); render(); } catch (RuntimeException e) { message(R.string.extra_keys_editor_limit); }
+        });
+        addRow.setEnabled(layout.rowCount() < ExtraKeyLayout.MAX_ROWS && !busy); content.addView(addRow);
+        save.setEnabled(!busy && !saveBlocked && snapshot != null);
+    }
+
+    private String keyLabel(JsonElement value) {
+        if (value.isJsonPrimitive()) return truncate(value.getAsString());
+        JsonObject object = value.getAsJsonObject();
+        String text = object.has("display") ? object.get("display").getAsString() :
+            object.has("macro") ? object.get("macro").getAsString() : object.get("key").getAsString();
+        if (object.has("macro")) text = getString(R.string.extra_keys_editor_macro_label, text);
+        if (object.has("popup")) text = getString(R.string.extra_keys_editor_popup_label, text);
+        return truncate(text);
+    }
+    private static String truncate(String text) { return text.length() > 40 ? text.substring(0, 40) + "…" : text; }
+
+    private void addKey(int row) {
+        if (busy || layout == null) return;
+        EditText input = new EditText(this); input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_TEXT);
+        new AlertDialog.Builder(this).setTitle(R.string.extra_keys_editor_add_key).setView(input)
+            .setPositiveButton(android.R.string.ok, (d, w) -> {
+                try { if (input.getText().length() == 0) throw new IllegalArgumentException(); layout.addKey(row, input.getText().toString()); render(); }
+                catch (RuntimeException e) { message(R.string.extra_keys_editor_limit); }
+            }).setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void removeRow(int row) {
+        if (busy || layout == null) return;
+        new AlertDialog.Builder(this).setMessage(R.string.extra_keys_editor_remove_row_confirm)
+            .setPositiveButton(android.R.string.ok, (d, w) -> {
+                try { layout.removeRow(row); render(); } catch (RuntimeException e) { message(R.string.extra_keys_editor_limit); }
+            }).setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void editKey(int row, int index) {
+        if (busy || layout == null) return;
+        String[] options = getResources().getStringArray(R.array.extra_keys_editor_actions);
+        new AlertDialog.Builder(this).setTitle(keyLabel(layout.key(row, index))).setItems(options, (d, choice) -> {
+            try {
+                switch (choice) {
+                    case 0: layout.moveKey(row, index, row, index - 1); break;
+                    case 1: layout.moveKey(row, index, row, index + 1); break;
+                    case 2: layout.moveKey(row, index, row - 1, Math.min(index, layout.keyCount(row - 1))); break;
+                    case 3: layout.moveKey(row, index, row + 1, Math.min(index, layout.keyCount(row + 1))); break;
+                    case 4: editKeyJson(row, index); return;
+                    case 5: layout.removeKey(row, index); break;
+                    default: return;
+                }
+                render();
+            } catch (RuntimeException e) { message(R.string.extra_keys_editor_limit); }
+        }).show();
+    }
+
+    private void editKeyJson(int row, int index) {
+        EditText input = new EditText(this); input.setText(layout.key(row, index).toString());
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        new AlertDialog.Builder(this).setTitle(R.string.extra_keys_editor_edit_json).setMessage(R.string.extra_keys_editor_json_hint).setView(input)
+            .setPositiveButton(android.R.string.ok, (d, w) -> {
+                try { layout.replaceKeyJson(row, index, input.getText().toString()); render(); }
+                catch (Exception e) { message(R.string.extra_keys_editor_invalid); }
+            }).setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void choosePreset() {
+        if (busy || layout == null) return;
+        ExtraKeyLayout.Preset[] presets = ExtraKeyLayout.Preset.values();
+        new AlertDialog.Builder(this).setTitle(R.string.extra_keys_editor_presets)
+            .setItems(R.array.extra_keys_editor_presets, (d, index) -> new AlertDialog.Builder(this)
+                .setMessage(R.string.extra_keys_editor_preset_confirm)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    try { layout = ExtraKeyLayout.preset(presets[index]); render(); }
+                    catch (IOException e) { message(R.string.extra_keys_editor_invalid); }
+                }).setNegativeButton(android.R.string.cancel, null).show()).show();
+    }
+
+    private void revert() {
+        if (busy || originalLayout == null) return;
+        try { layout = ExtraKeyLayout.parse(originalLayout); render(); }
+        catch (IOException e) { message(R.string.extra_keys_editor_invalid); }
+    }
+
+    private void save() {
+        if (busy || saveBlocked || snapshot == null || layout == null) return;
+        final ExtraKeyLayout copy;
+        try { copy = ExtraKeyLayout.parse(layout.toJson()); }
+        catch (IOException e) { message(R.string.extra_keys_editor_invalid); return; }
+        busy = true; saving = true; render();
+        final ExtraKeyPropertyStore.Snapshot expected = snapshot;
+        WeakReference<ExtraKeysEditorActivity> ref = new WeakReference<>(this);
+        Handler handler = main;
+        io.execute(() -> {
+            ExtraKeyPropertyStore.SaveResult result = null; String error = null; boolean uncertain = false;
+            try {
+                File current = activeFile();
+                if ((expected.existed() && (current == null || !current.equals(expected.file()))) ||
+                    (!expected.existed() && current != null)) throw new ExtraKeyPropertyStore.ConflictException();
+                validateParent(expected.file());
+                new ExtraKeysInfo(copy.toJson(), "default", ExtraKeysConstants.CONTROL_CHARS_ALIASES);
+                result = ExtraKeyPropertyStore.save(expected, copy);
+                RELOAD_NEEDED.set(true);
+            } catch (ExtraKeyPropertyStore.SaveUncertainException e) {
+                uncertain = true; error = e.getMessage() + (e.backup == null ? "" : "\n" + e.backup.getAbsolutePath());
+            } catch (Exception e) { error = e.getMessage(); }
+            final ExtraKeyPropertyStore.SaveResult saved = result;
+            final String failure = error;
+            final boolean wasUncertain = uncertain;
+            handler.post(() -> {
+                ExtraKeysEditorActivity current = ref.get();
+                if (current == null || current.isFinishing() || current.isDestroyed()) return;
+                current.busy = false; current.saving = false;
+                if (saved != null) {
+                    android.widget.Toast.makeText(current, saved.backup == null ? current.getString(R.string.extra_keys_editor_saved) :
+                        current.getString(R.string.extra_keys_editor_saved_backup, saved.backup.getAbsolutePath()), android.widget.Toast.LENGTH_LONG).show();
+                    current.setResult(RESULT_OK);
+                    current.finish();
+                } else {
+                    if (wasUncertain) current.saveBlocked = true;
+                    current.render();
+                    new AlertDialog.Builder(current).setTitle(R.string.extra_keys_editor_save_failed)
+                        .setMessage(failure == null ? current.getString(R.string.extra_keys_editor_invalid) : failure)
+                        .setPositiveButton(android.R.string.ok, null).show();
+                }
+            });
+        });
+    }
+    private void message(int text) { new AlertDialog.Builder(this).setMessage(text).setPositiveButton(android.R.string.ok, null).show(); }
+    @Override public void onBackPressed() { if (!saving) super.onBackPressed(); }
+    @Override protected void onDestroy() { io.shutdown(); super.onDestroy(); }
+}

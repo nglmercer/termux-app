@@ -141,6 +141,15 @@ public final class ExtraKeyLayout {
         try { parse(rows.toString()); }
         catch (IOException e) { target.remove(target.size() - 1); throw new IllegalStateException("Layout limit", e); }
     }
+    /** Explicitly replace one key from JSON while preserving the rest of the layout. */
+    public void replaceKeyJson(int row, int index, String keyJson) throws IOException {
+        ExtraKeyLayout parsed = parse("[[" + keyJson + "]]");
+        if (parsed.keyCount(0) != 1) throw new IOException("Expected one key");
+        JsonArray target = row(row);
+        JsonElement previous = target.set(index, parsed.key(0, 0));
+        try { parse(rows.toString()); }
+        catch (IOException e) { target.set(index, previous); throw e; }
+    }
     public void removeKey(int row, int index) { row(row).remove(index); }
     /** Destination is an insertion position after the source element is removed. */
     public void moveKey(int fromRow, int fromIndex, int toRow, int toIndex) {
