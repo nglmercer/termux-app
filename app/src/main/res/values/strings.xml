@@ -296,7 +296,11 @@
     </string-array>
     <string name="process_snapshot_empty_search">No visible processes match.</string>
     <string-array name="process_snapshot_sorts">
-        <item>PID</item><item>Name</item><item>CPU (highest first)</item><item>RSS (highest first)</item>
+        <item>PID</item><item>Name</item><item>CPU (highest first)</item><item>RSS (highest first)</item><item>Process tree</item>
+    </string-array>
+    <string name="process_snapshot_interval">Process refresh interval</string>
+    <string-array name="process_snapshot_intervals">
+        <item>Every 2 seconds</item><item>Every 5 seconds</item><item>Every 10 seconds (lower power)</item><item>Every 30 seconds (lower power)</item>
     </string-array>
     <string name="process_snapshot_loading">Reading Termux processes…</string>
     <string name="process_snapshot_failed">Could not start process snapshot.</string>
