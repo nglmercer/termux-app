@@ -1,5 +1,6 @@
 package android.content;
 import android.os.Parcelable;
+import android.net.Uri;
 import java.util.ArrayList;
 public final class Intent {
     public static final String ACTION_SEND = "android.intent.action.SEND";
@@ -9,11 +10,14 @@ public final class Intent {
     private Parcelable stream;
     private ArrayList<? extends Parcelable> streams;
     private ClipData clip;
+    private Uri data;
     public Intent(String action) { this.action = action; }
     public String getAction() { return action; }
     @SuppressWarnings("unchecked") public <T extends Parcelable> T getParcelableExtra(String key) { return (T) stream; }
     @SuppressWarnings("unchecked") public <T extends Parcelable> ArrayList<T> getParcelableArrayListExtra(String key) { return (ArrayList<T>) streams; }
     public ClipData getClipData() { return clip; }
+    public Uri getData() { return data; }
+    public Intent data(Uri value) { data = value; return this; }
     public Intent stream(Parcelable value) { stream = value; return this; }
     public Intent streams(ArrayList<? extends Parcelable> value) { streams = value; return this; }
     public Intent clip(ClipData value) { clip = value; return this; }

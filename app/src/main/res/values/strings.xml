@@ -250,9 +250,13 @@
     <string name="local_control_enabled">Local control enabled for this service session.</string>
     <string name="local_control_start_failed">Local control could not start. Check for a previous listener or a stale control socket.</string>
     <string name="local_control_unavailable">Local control is unavailable.</string>
+    <string name="clipboard_type_unsupported">This clipboard item is not supported. Copy text or choose a PNG, JPEG, or WebP image.</string>
+    <string name="clipboard_text_busy">A clipboard text import is already in progress.</string>
+    <string name="clipboard_text_failed">Could not read clipboard text. Copy it again; text from a content provider is limited to 1 MiB.</string>
+    <string name="clipboard_text_session_changed">The terminal session changed. Copy and paste the text again in the intended session.</string>
     <string name="clipboard_image_too_many">Paste at most eight images at a time.</string>
     <string name="clipboard_image_busy">An image import is already in progress.</string>
-    <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type. Limits are 20 MiB per image, 40 MiB per batch, and 100 MiB in the image cache.</string>
+    <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type.</string>
     <string name="clipboard_image_session_changed">Session changed. Images saved in %1$s</string>
     <string name="clipboard_image_imported">Image paths pasted. The images are stored in the app cache.</string>
     <string name="action_import_image">Import image</string>
@@ -261,7 +265,7 @@
     <string name="clipboard_image_not_pasted">Image paths were not pasted. Images are saved in %1$s</string>
     <string name="clipboard_image_access_failed">Image access expired or was denied. Copy the image again or use Import image.</string>
     <string name="clipboard_image_unsupported">Unsupported or invalid image. Choose a PNG, JPEG, or WebP image.</string>
-    <string name="clipboard_image_size_limit">Image import exceeds the 20 MiB per image or 40 MiB batch limit.</string>
+    <string name="clipboard_image_size_limit">Image import exceeds the %1$d MiB per image or %2$d MiB batch limit.</string>
     <string name="clipboard_image_cache_full">Image cache is full. Move or remove images you no longer need from the app cache.</string>
     <string name="share_image_to_terminal">Share image to terminal</string>
     <string name="share_image_confirm">Import %1$d image(s) and paste their paths into the current terminal? No Enter key will be sent.</string>
@@ -280,10 +284,20 @@
     <string name="thermal_emergency">Emergency</string>
     <string name="thermal_shutdown">Shutdown</string>
     <string name="action_process_snapshot">Termux processes</string>
+    <string name="process_snapshot_search">Search process name or PID</string>
+    <string name="process_snapshot_sort">Sort processes</string>
+    <string name="process_snapshot_scope">Filter processes</string>
+    <string-array name="process_snapshot_scopes">
+        <item>Termux sessions and tasks</item><item>Session descendants</item><item>Background task descendants</item><item>All visible same-UID processes</item>
+    </string-array>
+    <string name="process_snapshot_empty_search">No visible processes match.</string>
+    <string-array name="process_snapshot_sorts">
+        <item>PID</item><item>Name</item><item>CPU (highest first)</item><item>RSS (highest first)</item>
+    </string-array>
     <string name="process_snapshot_loading">Reading Termux processes…</string>
     <string name="process_snapshot_failed">Could not start process snapshot.</string>
     <string name="process_snapshot_changed">Sessions changed while reading. Refresh to try again.</string>
-    <string name="process_snapshot_caveat">Read-only snapshot of visible same-UID session and background-task descendants. Android restrictions, process churn and PID reuse can make this incomplete or stale. RSS includes shared pages. CPU is the percentage of one core between refreshes and may exceed 100%.</string>
+    <string name="process_snapshot_caveat">Read-only snapshot of visible same-UID processes. Session and task categories are best-effort descendant matches. Android restrictions, process churn and PID reuse can make this incomplete or stale. RSS includes shared pages. CPU is the percentage of one core between refreshes and may exceed 100%.</string>
     <string name="process_snapshot_incomplete">Some process data was unavailable or the scan limit was reached. Process roots missing: %1$d.</string>
     <string name="process_snapshot_unknown_tasks">Running background tasks without an available PID: %1$d.</string>
     <string name="process_snapshot_empty">No Termux processes were visible.</string>
@@ -307,4 +321,46 @@
     <string name="diagnostics_storage">Broad shared storage access: %1$s</string>
     <string name="diagnostics_notifications">App notifications: %1$s</string>
     <string name="diagnostics_clipboard">Clipboard MIME metadata: %1$s</string>
+    <string name="extra_keys_editor_title">Extra keys</string>
+    <string name="extra_keys_editor_settings_summary">Edit and preview the terminal keybar</string>
+    <string name="extra_keys_editor_loading">Loading extra-key settings…</string>
+    <string name="extra_keys_editor_load_failed">Cannot edit this layout. The file may be inaccessible, invalid, linked, or outside editor limits. Existing settings were not changed.</string>
+    <string name="extra_keys_editor_restore_conflict">The restored state could not be safely saved because the settings may have changed, the saved state was invalid, or a save was interrupted. Export the preview if needed, inspect the settings, and reopen the editor before saving.</string>
+    <string name="extra_keys_editor_explanation">Editing %1$s. Saving appends an extra-keys override and creates a backup. Concurrent shell edits can conflict.</string>
+    <string name="extra_keys_editor_presets">Presets</string>
+    <string name="extra_keys_editor_preset_confirm">Replace the current unsaved layout with this preset?</string>
+    <string name="extra_keys_editor_revert">Revert</string>
+    <string name="extra_keys_editor_import">Import</string>
+    <string name="extra_keys_editor_export">Export</string>
+    <string name="extra_keys_editor_import_confirm">Replace the unsaved layout with an imported JSON file? Nothing is saved to termux.properties until you tap Save.</string>
+    <string name="extra_keys_editor_picker_failed">No document picker is available.</string>
+    <string name="extra_keys_editor_transfer_failed">The document could not be opened. Try again after the editor finishes loading.</string>
+    <string name="extra_keys_editor_importing">Importing layout…</string>
+    <string name="extra_keys_editor_exporting">Exporting layout…</string>
+    <string name="extra_keys_editor_imported">Layout imported into the preview. Tap Save to apply it.</string>
+    <string name="extra_keys_editor_exported">Layout exported.</string>
+    <string name="extra_keys_editor_import_failed">Could not import this document. The preview was not changed.</string>
+    <string name="extra_keys_editor_export_failed">Export failed and the selected file may be incomplete. Check it before retrying.</string>
+    <string name="extra_keys_editor_save">Save</string>
+    <string name="extra_keys_editor_row">Row %1$d</string>
+    <string name="extra_keys_editor_macro_label">Macro: %1$s</string>
+    <string name="extra_keys_editor_popup_label">%1$s (popup)</string>
+    <string name="extra_keys_editor_key_description">Row %1$d, key %2$d: %3$s. Tap to edit or move.</string>
+    <string name="extra_keys_editor_add_key">Add key</string>
+    <string name="extra_keys_editor_remove_row">Remove row</string>
+    <string name="extra_keys_editor_remove_row_confirm">Remove this row and its keys from the unsaved layout?</string>
+    <string name="extra_keys_editor_add_row">Add row</string>
+    <string name="extra_keys_editor_limit">That action is outside the editor limits or available positions.</string>
+    <string name="extra_keys_editor_edit_json">Edit key JSON</string>
+    <string name="extra_keys_editor_json_hint">A key is a JSON string or an object with a key or macro. Macros can send multiple keys. Preserve any custom fields you want to keep.</string>
+    <string name="extra_keys_editor_invalid">Invalid extra-key configuration. Existing settings were not changed.</string>
+    <string name="extra_keys_editor_save_failed">Could not save extra keys</string>
+    <string name="extra_keys_editor_saved">Extra keys saved.</string>
+    <string name="extra_keys_editor_saved_backup">Extra keys saved. Backup: %1$s</string>
+    <string-array name="extra_keys_editor_actions">
+        <item>Move left</item><item>Move right</item><item>Move to previous row</item><item>Move to next row</item><item>Edit key JSON</item><item>Remove key</item>
+    </string-array>
+    <string-array name="extra_keys_editor_presets">
+        <item>Classic</item><item>Coding</item><item>Vim</item><item>Tmux</item><item>Compact</item>
+    </string-array>
 </resources>
