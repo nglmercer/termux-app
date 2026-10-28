@@ -1,5 +1,6 @@
 package com.termux.view;
 
+import android.net.Uri;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -62,6 +63,9 @@ public interface TerminalViewClient {
 
     boolean onCodePoint(int codePoint, boolean ctrlDown, TerminalSession session);
 
+
+    /** Accept an IME content URI and release its temporary grant when asynchronous reading ends. */
+    default boolean onImeImage(Uri uri, TerminalSession session, Runnable releasePermission) { return false; }
 
     void onEmulatorSet();
 

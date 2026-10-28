@@ -5,11 +5,15 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ClipDescription;
+import android.net.Uri;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.media.AudioAttributes;
 import android.media.SoundPool;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.widget.ListView;
 
@@ -17,6 +21,8 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.termux.R;
+import com.termux.app.terminal.clipboard.ClipboardImageImporter;
+import com.termux.app.terminal.clipboard.ImageImportException;
 import com.termux.shared.interact.ShareUtils;
 import com.termux.shared.termux.shell.command.runner.terminal.TermuxSession;
 import com.termux.shared.termux.interact.TextInputDialogUtils;
@@ -35,7 +41,11 @@ import com.termux.terminal.TextStyle;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.util.Properties;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** The {@link TerminalSessionClient} implementation that may require an {@link Activity} for its interface methods. */
 public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionClientBase {
@@ -43,6 +53,21 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
     private final TermuxActivity mActivity;
 
     private static final int MAX_SESSIONS = 8;
+    private static final AtomicBoolean IMAGE_IMPORT_IN_PROGRESS = new AtomicBoolean();
+    // Accessed on the main thread only; neither field retains an Activity.
+    private static WeakReference<TermuxTerminalSessionActivityClient> sVisibleImageClient = new WeakReference<>(null);
+    private static ImageImportResult sPendingImageResult;
+
+    private static final class ImageImportResult {
+        final String sessionHandle;
+        final List<File> files;
+        final int errorMessage;
+        ImageImportResult(String sessionHandle, List<File> files, int errorMessage) {
+            this.sessionHandle = sessionHandle;
+            this.files = files;
+            this.errorMessage = errorMessage;
+        }
+    }
 
     private SoundPool mBellSoundPool;
 
@@ -80,6 +105,8 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         // The current terminal session may have changed while being away, force
         // a refresh of the displayed terminal.
         mActivity.getTerminalView().onScreenUpdated();
+        sVisibleImageClient = new WeakReference<>(this);
+        deliverPendingImageImport();
     }
 
     /**
@@ -96,6 +123,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
      * Should be called when mActivity.onStop() is called
      */
     public void onStop() {
+        if (sVisibleImageClient.get() == this) sVisibleImageClient.clear();
         // Store current session in shared preferences so that it can be restored later in
         // {@link #onStart} if needed.
         setCurrentStoredSession();
@@ -196,8 +224,102 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
 
         TerminalSession target = session != null ? session : mActivity.getCurrentSession();
         if (target == null || !target.isRunning() || target.getEmulator() == null) return;
-        String text = ShareUtils.getTextStringFromClipboardIfSet(mActivity, true);
-        if (text != null) target.getEmulator().paste(text);
+
+        ClipboardManager clipboard = (ClipboardManager) mActivity.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) return;
+        ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) return;
+        ClipDescription description = clip.getDescription();
+        ClipData.Item first = clip.getItemAt(0);
+        if (first.getText() == null && description != null && description.hasMimeType("image/*")) {
+            if (clip.getItemCount() > ClipboardImageImporter.MAX_BATCH_ITEMS) {
+                mActivity.showToast(mActivity.getString(R.string.clipboard_image_too_many), true);
+                return;
+            }
+            List<Uri> uris = new ArrayList<>();
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri uri = clip.getItemAt(i).getUri();
+                if (uri == null) {
+                    mActivity.showToast(mActivity.getString(R.string.clipboard_image_failed), true);
+                    return;
+                }
+                uris.add(uri);
+            }
+            importClipboardImages(target, uris);
+            return;
+        }
+        CharSequence text = first.coerceToText(mActivity);
+        if (text != null && text.length() > 0) target.getEmulator().paste(text.toString());
+    }
+
+    public void importClipboardImages(TerminalSession target, List<Uri> uris) {
+        importClipboardImages(target, uris, () -> { });
+    }
+
+    /** On success owns the release callback until the I/O worker has finished with the URI. */
+    public boolean importClipboardImages(TerminalSession target, List<Uri> uris, Runnable releasePermission) {
+        if (!IMAGE_IMPORT_IN_PROGRESS.compareAndSet(false, true)) {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_image_busy), true);
+            return false;
+        }
+        final Context context = mActivity.getApplicationContext();
+        final String sessionHandle = target.mHandle;
+        final List<Uri> selectedUris = new ArrayList<>(uris);
+        Thread worker = new Thread(() -> {
+            List<File> files = null;
+            int errorMessage = R.string.clipboard_image_failed;
+            try {
+                files = ClipboardImageImporter.importImages(context, selectedUris);
+            } catch (ImageImportException e) {
+                switch (e.getReason()) {
+                    case ACCESS: errorMessage = R.string.clipboard_image_access_failed; break;
+                    case UNSUPPORTED: errorMessage = R.string.clipboard_image_unsupported; break;
+                    case SIZE: errorMessage = R.string.clipboard_image_size_limit; break;
+                    case CACHE: errorMessage = R.string.clipboard_image_cache_full; break;
+                }
+            } catch (SecurityException e) {
+                errorMessage = R.string.clipboard_image_access_failed;
+            } catch (Exception e) {
+                // Do not log clipboard contents or provider URIs.
+            } finally {
+                releasePermission.run();
+            }
+            final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage);
+            new Handler(Looper.getMainLooper()).post(() -> {
+                sPendingImageResult = result;
+                TermuxTerminalSessionActivityClient client = sVisibleImageClient.get();
+                if (client != null) client.deliverPendingImageImport();
+            });
+        }, "TermuxClipboardImageImport");
+        try {
+            worker.start();
+            return true;
+        } catch (RuntimeException e) {
+            IMAGE_IMPORT_IN_PROGRESS.set(false);
+            mActivity.showToast(mActivity.getString(R.string.clipboard_image_failed), true);
+            return false;
+        }
+    }
+
+    /** Deliver only when a visible activity has restored a session. */
+    private void deliverPendingImageImport() {
+        ImageImportResult result = sPendingImageResult;
+        if (result == null || !mActivity.isVisible()) return;
+        TerminalSession target = mActivity.getCurrentSession();
+        if (target == null && result.files != null) return;
+        sPendingImageResult = null;
+        IMAGE_IMPORT_IN_PROGRESS.set(false);
+        if (result.files == null) {
+            mActivity.showToast(mActivity.getString(result.errorMessage), true);
+        } else if (!result.sessionHandle.equals(target.mHandle) || !target.isRunning() || target.getEmulator() == null) {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_image_session_changed, result.files.get(0).getParent()), true);
+        } else if (target.getEmulator().tryPaste(ClipboardImageImporter.quotePaths(result.files))) {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_image_imported), false);
+        } else {
+            // Run after the queue's rejection notification so the recovery location stays visible.
+            mActivity.getTerminalView().post(() -> mActivity.showToast(
+                mActivity.getString(R.string.clipboard_image_not_pasted, result.files.get(0).getParent()), true));
+        }
     }
 
     @Override
@@ -318,6 +440,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         // be stale, like current session not selected or scrolled to.
         checkAndScrollToSession(session);
         updateBackgroundColor();
+        deliverPendingImageImport();
     }
 
     void notifyOfSessionChange() {

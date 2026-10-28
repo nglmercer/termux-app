@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -30,6 +31,8 @@ import com.termux.R;
 import com.termux.app.control.ControlCore;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
+import com.termux.app.terminal.clipboard.ClipboardImageImporter;
+import com.termux.app.terminal.clipboard.SharedImageUris;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
 import com.termux.shared.activities.ReportActivity;
@@ -69,6 +72,8 @@ import androidx.viewpager.widget.ViewPager;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A terminal emulator activity.
@@ -192,6 +197,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private static final int CONTEXT_MENU_SETTINGS_ID = 8;
     private static final int CONTEXT_MENU_REPORT_ID = 9;
     private static final int CONTEXT_MENU_LOCAL_CONTROL = 13;
+    private static final int CONTEXT_MENU_IMPORT_IMAGE = 12;
+    private static final int REQUEST_IMPORT_IMAGE = 48372;
+    private static final String STATE_IMAGE_IMPORT_SESSION = "image_import_session";
+    private String mImageImportSessionHandle;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -203,8 +212,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         Logger.logDebug(LOG_TAG, "onCreate");
         mIsOnResumeAfterOnCreate = true;
 
-        if (savedInstanceState != null)
+        if (savedInstanceState != null) {
             mIsActivityRecreated = savedInstanceState.getBoolean(ARG_ACTIVITY_RECREATED, false);
+            mImageImportSessionHandle = savedInstanceState.getString(STATE_IMAGE_IMPORT_SESSION);
+        }
 
         // Delete ReportInfo serialized object files from cache older than 14 days
         ReportActivity.deleteReportInfoFilesOlderThanXDays(this, 14, false);
@@ -324,6 +335,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TermuxCrashUtils.notifyAppCrashFromCrashLogFile(this, LOG_TAG);
 
         mIsOnResumeAfterOnCreate = false;
+        consumeImageShareWhenReady();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (isImageShare(intent)) {
+            setIntent(intent);
+            consumeImageShareWhenReady();
+        }
     }
 
     @Override
@@ -376,6 +397,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         super.onSaveInstanceState(savedInstanceState);
         saveTerminalToolbarTextInput(savedInstanceState);
         savedInstanceState.putBoolean(ARG_ACTIVITY_RECREATED, true);
+        savedInstanceState.putString(STATE_IMAGE_IMPORT_SESSION, mImageImportSessionHandle);
     }
 
 
@@ -396,7 +418,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         setTermuxSessionsListView();
 
         final Intent intent = getIntent();
-        setIntent(null);
+        if (!isImageShare(intent)) setIntent(null);
 
         if (mTermuxService.isTermuxSessionsEmpty()) {
             if (mIsVisible) {
@@ -408,6 +430,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             launchFailsafe = intent.getExtras().getBoolean(TERMUX_ACTIVITY.EXTRA_FAILSAFE_SESSION, false);
                         }
                         mTermuxTerminalSessionActivityClient.addNewSession(launchFailsafe, null);
+                        consumeImageShareWhenReady();
                     } catch (WindowManager.BadTokenException e) {
                         // Activity finished - ignore.
                     }
@@ -431,6 +454,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         // Update the {@link TerminalSession} and {@link TerminalEmulator} clients.
         mTermuxService.setTermuxTerminalSessionClient(mTermuxTerminalSessionActivityClient);
+        consumeImageShareWhenReady();
     }
 
     @Override
@@ -638,6 +662,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         boolean autoFillEnabled = mTerminalView.isAutoFillEnabled();
 
         menu.add(Menu.NONE, CONTEXT_MENU_LOCAL_CONTROL, Menu.NONE, R.string.action_local_control);
+        menu.add(Menu.NONE, CONTEXT_MENU_IMPORT_IMAGE, Menu.NONE, R.string.action_import_image).setEnabled(currentSession.isRunning());
         menu.add(Menu.NONE, CONTEXT_MENU_SELECT_URL_ID, Menu.NONE, R.string.action_select_url);
         menu.add(Menu.NONE, CONTEXT_MENU_SHARE_TRANSCRIPT_ID, Menu.NONE, R.string.action_share_transcript);
         if (!DataUtils.isNullOrEmpty(mTerminalView.getStoredSelectedText()))
@@ -669,6 +694,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         switch (item.getItemId()) {
             case CONTEXT_MENU_LOCAL_CONTROL:
                 showLocalControlDialog();
+                return true;
+            case CONTEXT_MENU_IMPORT_IMAGE:
+                openImagePicker(session);
                 return true;
             case CONTEXT_MENU_SELECT_URL_ID:
                 mTermuxTerminalViewClient.showUrlSelection();
@@ -841,9 +869,97 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (!requested) showToast(getString(R.string.local_control_unavailable), true);
     }
 
+    private static boolean isImageShare(@Nullable Intent intent) {
+        return intent != null && (Intent.ACTION_SEND.equals(intent.getAction()) ||
+            Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction()));
+    }
+
+    /** External intents are never allowed to inject text without a local confirmation. */
+    private void consumeImageShareWhenReady() {
+        Intent intent = getIntent();
+        if (!isImageShare(intent) || !mIsVisible || mTermuxService == null) return;
+        TerminalSession target = getCurrentSession();
+        if (target == null) return; // A cold start may still be installing the bootstrap.
+        setIntent(null);
+        final List<Uri> uris;
+        try {
+            uris = SharedImageUris.fromIntent(intent);
+        } catch (RuntimeException e) {
+            showToast(getString(R.string.clipboard_image_failed), true);
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(R.string.share_image_to_terminal)
+            .setMessage(getString(R.string.share_image_confirm, uris.size()))
+            .setPositiveButton(R.string.share_image_import, (dialog, which) -> {
+                TerminalSession current = getCurrentSession();
+                if (current != target || !target.isRunning()) {
+                    showToast(getString(R.string.clipboard_image_picker_session_changed), true);
+                    return;
+                }
+                mTermuxTerminalSessionActivityClient.importClipboardImages(target, uris);
+            })
+            .setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void openImagePicker(TerminalSession session) {
+        if (session == null || !session.isRunning()) return;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/png", "image/jpeg", "image/webp"});
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        mImageImportSessionHandle = session.mHandle;
+        try {
+            startActivityForResult(intent, REQUEST_IMPORT_IMAGE);
+        } catch (ActivityNotFoundException e) {
+            mImageImportSessionHandle = null;
+            showToast(getString(R.string.clipboard_image_picker_unavailable), true);
+        }
+    }
+
+    private void handleImagePickerResult(int resultCode, @Nullable Intent data) {
+        String handle = mImageImportSessionHandle;
+        mImageImportSessionHandle = null;
+        if (resultCode != RESULT_OK || data == null) return;
+        TerminalSession session = getCurrentSession();
+        if (handle == null || session == null || !handle.equals(session.mHandle) || !session.isRunning()
+            || mTermuxTerminalSessionActivityClient == null) {
+            showToast(getString(R.string.clipboard_image_picker_session_changed), true);
+            return;
+        }
+        List<Uri> uris = new ArrayList<>();
+        ClipData clip = data.getClipData();
+        if (clip != null) {
+            if (clip.getItemCount() > ClipboardImageImporter.MAX_BATCH_ITEMS) {
+                showToast(getString(R.string.clipboard_image_too_many), true);
+                return;
+            }
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri uri = clip.getItemAt(i).getUri();
+                if (uri == null) {
+                    showToast(getString(R.string.clipboard_image_failed), true);
+                    return;
+                }
+                uris.add(uri);
+            }
+        } else if (data.getData() != null) {
+            uris.add(data.getData());
+        }
+        if (uris.isEmpty()) {
+            showToast(getString(R.string.clipboard_image_failed), true);
+            return;
+        }
+        mTermuxTerminalSessionActivityClient.importClipboardImages(session, uris);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IMPORT_IMAGE) {
+            handleImagePickerResult(resultCode, data);
+            return;
+        }
         Logger.logVerbose(LOG_TAG, "onActivityResult: requestCode: " + requestCode + ", resultCode: "  + resultCode + ", data: "  + IntentUtils.getIntentString(data));
         if (requestCode == PermissionUtils.REQUEST_GRANT_STORAGE_PERMISSION) {
             requestStoragePermission(true);
