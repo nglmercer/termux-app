@@ -3,6 +3,10 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <termios.h>
 #include <time.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -201,11 +205,8 @@ static int unsigned_member(struct span object, const char *name, uint64_t *out) 
     return 0;
 }
 
-static int follow_output(int fd, const char *session_id) {
-    uint64_t offset = 0;
-    if (isatty(STDOUT_FILENO))
-        fprintf(stderr, "termux-control: follow from a different session or redirect stdout to avoid an output loop\n");
-    for (;;) {
+static int read_output_once(int fd, const char *session_id, uint64_t *position, int *received) {
+        uint64_t offset = *position;
         char request[MAX_REQUEST] = ""; size_t used = 0;
         if (append(request, sizeof(request), &used, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.output.read\",\"params\":{\"id\":") ||
             quoted(request, sizeof(request), &used, session_id)) return -1;
@@ -244,16 +245,210 @@ static int follow_output(int fd, const char *session_id) {
             if (fwrite(data, 1, size, stdout) != size || fflush(stdout)) {
                 fprintf(stderr, "termux-control: cannot write output\n"); return -1;
             }
-        } else {
+        }
+        *received = length != 0;
+        *position = next;
+        return 0;
+}
+
+static int follow_output(int fd, const char *session_id) {
+    uint64_t offset = 0;
+    if (isatty(STDOUT_FILENO))
+        fprintf(stderr, "termux-control: follow from a different session or redirect stdout to avoid an output loop\n");
+    for (;;) {
+        int received = 0;
+        int status = read_output_once(fd, session_id, &offset, &received);
+        if (status) return status;
+        if (!received) {
             struct timespec delay = { .tv_sec = 0, .tv_nsec = 250000000 };
             while (nanosleep(&delay, &delay) && errno == EINTR) { }
         }
-        offset = next;
     }
 }
 
+/* Refuse direct or ancestral self-attachment: reflecting output into its source can loop. */
+static int ancestor_matches(pid_t target) {
+    pid_t current = getpid();
+    for (int depth = 0; depth < 128 && current > 1; ++depth) {
+        if (current == target) return 1;
+        char path[64], line[4096]; struct stat info;
+        snprintf(path, sizeof(path), "/proc/%ld", (long)current);
+        if (stat(path, &info)) return -1;
+        if (info.st_uid != getuid()) return 0;
+        snprintf(path, sizeof(path), "/proc/%ld/stat", (long)current);
+        FILE *file = fopen(path, "r");
+        if (!file) return -1;
+        char *got = fgets(line, sizeof(line), file);
+        fclose(file);
+        if (!got) return -1;
+        char *end = strrchr(line, ')'); char state; long parent;
+        if (!end || sscanf(end + 1, " %c %ld", &state, &parent) != 2 || parent <= 0 || parent > INT_MAX || parent == current)
+            return -1;
+        current = (pid_t)parent;
+    }
+    return current <= 1 ? 0 : -1;
+}
+
+/* Identify the target using the server's session list, then compare real terminal devices. */
+static int verify_attach_terminal(int fd, const char *session_id) {
+    struct stat input, output, target;
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || fstat(STDIN_FILENO, &input) || fstat(STDOUT_FILENO, &output) ||
+        !S_ISCHR(input.st_mode) || !S_ISCHR(output.st_mode) || input.st_rdev != output.st_rdev) {
+        fprintf(stderr, "termux-control: attach requires the same interactive terminal for stdin and stdout\n"); return -1;
+    }
+    char *response = NULL;
+    int status = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"session.list\",\"params\":{}}", 6, 0, NULL, 0, &response);
+    if (status) { free(response); return -1; }
+    const char *end = response; struct span root = {response, NULL}, result, sessions;
+    char wanted[MAX_REQUEST] = ""; size_t used = 0; pid_t pid = 0; int found = 0;
+    if (quoted(wanted, sizeof(wanted), &used, session_id) || !value(&end, 0)) goto invalid;
+    ws(&end); root.end = end;
+    if (member(root, "result", &result) != 1 || member(result, "sessions", &sessions) != 1) goto invalid;
+    const char *p = sessions.start;
+    if (*p++ != '[') goto invalid;
+    ws(&p);
+    while (p < sessions.end && *p != ']') {
+        struct span entry, id, state; uint64_t rawpid;
+        entry.start = p;
+        if (!value(&p, 1)) goto invalid;
+        entry.end = p;
+        if (member(entry, "id", &id) != 1) goto invalid;
+        if (equals(id, wanted)) {
+            if (found++ || member(entry, "state", &state) != 1 || !equals(state, "\"running\"") ||
+                unsigned_member(entry, "pid", &rawpid) || rawpid == 0 || rawpid > INT_MAX) goto invalid;
+            pid = (pid_t)rawpid;
+        }
+        ws(&p);
+        if (*p == ',') { ++p; ws(&p); }
+        else if (*p != ']') goto invalid;
+    }
+    if (*p != ']' || !found) goto invalid;
+    free(response); response = NULL;
+    char path[64];
+    int ancestor = ancestor_matches(pid);
+    if (ancestor != 0) {
+        fprintf(stderr, "termux-control: target ancestry could not be safely verified or is an ancestor\n"); return -1;
+    }
+    for (int descriptor = 0; descriptor < 3; ++descriptor) {
+        snprintf(path, sizeof(path), "/proc/%ld/fd/%d", (long)pid, descriptor);
+        if (stat(path, &target) || (descriptor == 0 && !S_ISCHR(target.st_mode))) {
+            fprintf(stderr, "termux-control: target terminal identity could not be safely verified\n"); return -1;
+        }
+        if (S_ISCHR(target.st_mode) && target.st_rdev == input.st_rdev) {
+            fprintf(stderr, "termux-control: refusing to attach a terminal to itself\n"); return -1;
+        }
+    }
+    return 0;
+invalid:
+    free(response);
+    fprintf(stderr, "termux-control: target session is unavailable or session metadata is invalid\n"); return -1;
+}
+
+static volatile sig_atomic_t attach_stop, attach_suspend;
+static void attach_signal(int signal_number) {
+    if (signal_number == SIGTSTP) attach_suspend = 1;
+    else attach_stop = signal_number;
+}
+static int response_ack(const char *response, const char *field) {
+    const char *end = response; struct span root = {response, NULL}, result, ok;
+    if (!response || !value(&end, 0)) return -1;
+    ws(&end); root.end = end;
+    return member(root, "result", &result) == 1 && member(result, field, &ok) == 1 && equals(ok, "true") ? 0 : -1;
+}
+static int attach_write(int fd, const char *id, const unsigned char *data, size_t length) {
+    char request[MAX_REQUEST] = ""; size_t used = 0; char tail[64];
+    snprintf(tail, sizeof(tail), ",\"length\":%zu}}", length);
+    if (append(request, sizeof(request), &used, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.write\",\"params\":{\"id\":") ||
+        quoted(request, sizeof(request), &used, id) || append(request, sizeof(request), &used, tail)) return -1;
+    char *response = NULL; int status = exchange(fd, request, 4, 0, data, length, &response);
+    if (!status && response_ack(response, "ok")) status = -1;
+    free(response);
+    if (status < 0) fprintf(stderr, "termux-control: input outcome may be unknown; do not retry automatically\n");
+    return status;
+}
+static int attach_resize(int fd, const char *id, unsigned columns, unsigned rows) {
+    char request[MAX_REQUEST] = ""; size_t used = 0; char tail[96];
+    snprintf(tail, sizeof(tail), ",\"columns\":%u,\"rows\":%u}}", columns, rows);
+    if (append(request, sizeof(request), &used, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"session.resize\",\"params\":{\"id\":") ||
+        quoted(request, sizeof(request), &used, id) || append(request, sizeof(request), &used, tail)) return -1;
+    char *response = NULL; int status = exchange(fd, request, 5, 0, NULL, 0, &response);
+    if (!status && response_ack(response, "ok")) status = -1;
+    free(response);
+    return status;
+}
+static int attach_loop(int fd, const char *id) {
+    struct termios saved, raw;
+    if (tcgetattr(STDIN_FILENO, &saved)) { perror("termux-control: tcgetattr"); return -1; }
+    raw = saved; cfmakeraw(&raw);
+    int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE, SIGTSTP};
+    struct sigaction previous[sizeof(signals) / sizeof(signals[0])], action;
+    memset(&action, 0, sizeof(action)); action.sa_handler = attach_signal; sigemptyset(&action.sa_mask);
+    attach_stop = 0; attach_suspend = 0;
+    size_t installed = 0;
+    for (; installed < sizeof(signals) / sizeof(signals[0]); ++installed)
+        if (sigaction(signals[installed], &action, &previous[installed])) break;
+    if (installed != sizeof(signals) / sizeof(signals[0])) {
+        while (installed) { --installed; sigaction(signals[installed], &previous[installed], NULL); }
+        fprintf(stderr, "termux-control: cannot install terminal signal handlers\n"); return -1;
+    }
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw)) {
+        int error = errno;
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+        while (installed) { --installed; sigaction(signals[installed], &previous[installed], NULL); }
+        errno = error;
+        perror("termux-control: cannot enter raw mode"); return -1;
+    }
+    fprintf(stderr, "termux-control: attached; Ctrl-] then . detaches; Ctrl-] twice sends Ctrl-]\r\n");
+    uint64_t offset = 0; unsigned last_columns = 0, last_rows = 0; int escape = 0, result = 0, backlog = 0;
+    while (!attach_stop) {
+        if (attach_suspend) {
+            attach_suspend = 0;
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &saved)) { result = -1; break; }
+            kill(getpid(), SIGSTOP);
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &raw)) { result = -1; break; }
+            last_columns = last_rows = 0;
+        }
+        struct winsize size;
+        if (!ioctl(STDIN_FILENO, TIOCGWINSZ, &size) && size.ws_col >= 2 && size.ws_col <= 500 &&
+            size.ws_row >= 2 && size.ws_row <= 250 && (last_columns != size.ws_col || last_rows != size.ws_row)) {
+            last_columns = size.ws_col; last_rows = size.ws_row;
+            int status = attach_resize(fd, id, last_columns, last_rows);
+            if (status < 0) { result = -1; break; }
+            if (status > 0) fprintf(stderr, "termux-control: resize was rejected; local display may own the geometry\r\n");
+        }
+        struct pollfd input = { .fd = STDIN_FILENO, .events = POLLIN };
+        int ready_input = poll(&input, 1, backlog ? 0 : 100);
+        if (ready_input < 0) { if (errno == EINTR) continue; result = -1; break; }
+        if (ready_input > 0 && (input.revents & (POLLIN | POLLHUP))) {
+            unsigned char data[4096], sendbuf[8194]; ssize_t count = read(STDIN_FILENO, data, sizeof(data));
+            if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+            if (count <= 0) break;
+            size_t written = 0; int detach = 0;
+            for (ssize_t i = 0; i < count; ++i) {
+                unsigned char c = data[i];
+                if (escape) {
+                    escape = 0;
+                    if (c == '.') { detach = 1; break; }
+                    sendbuf[written++] = 0x1d;
+                    if (c == 0x1d) continue;
+                }
+                if (c == 0x1d) escape = 1; else sendbuf[written++] = c;
+            }
+            if (written && attach_write(fd, id, sendbuf, written)) { result = -1; break; }
+            if (detach) break;
+        } else if (ready_input > 0 && (input.revents & (POLLERR | POLLNVAL))) { result = -1; break; }
+        int received = 0;
+        if (read_output_once(fd, id, &offset, &received)) { result = -1; break; }
+        backlog = received;
+    }
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &saved)) { perror("termux-control: cannot restore terminal"); result = -1; }
+    while (installed) { --installed; sigaction(signals[installed], &previous[installed], NULL); }
+    if (attach_stop) result = 128 + attach_stop;
+    return result;
+}
+
 static void usage(void) {
-    fprintf(stderr, "Usage: termux-control [--socket PATH] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE|follow ID\n");
+    fprintf(stderr, "Usage: termux-control [--socket PATH] capabilities|list|create COLS ROWS [NAME]|rename ID NAME|resize ID COLS ROWS|close ID|write ID < FILE|follow ID|attach ID\n");
 }
 int main(int argc, char **argv) {
     const char *path = getenv("TERMUX_CONTROL_SOCKET"); char default_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -276,7 +471,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "resize") && count == 3 && number(argv[i + 1], 2, 500) && number(argv[i + 2], 2, 250)) method = "session.resize";
     else if (!strcmp(cmd, "close") && count == 1) method = "session.close";
     else if (!strcmp(cmd, "write") && count == 1) method = "session.write";
-    else if (!strcmp(cmd, "follow") && count == 1) method = "session.output.subscribe";
+    else if ((!strcmp(cmd, "follow") || !strcmp(cmd, "attach")) && count == 1) method = "session.output.subscribe";
     else { usage(); return 2; }
     unsigned char binary[MAX_FRAME + 1];
     size_t binary_len = 0;
@@ -288,7 +483,7 @@ int main(int argc, char **argv) {
         }
     }
     if (append(req, sizeof(req), &used, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":") || quoted(req, sizeof(req), &used, method) || append(req, sizeof(req), &used, ",\"params\":{")) goto too_long;
-    if (!strcmp(cmd, "rename") || !strcmp(cmd, "resize") || !strcmp(cmd, "close") || !strcmp(cmd, "write") || !strcmp(cmd, "follow")) {
+    if (!strcmp(cmd, "rename") || !strcmp(cmd, "resize") || !strcmp(cmd, "close") || !strcmp(cmd, "write") || !strcmp(cmd, "follow") || !strcmp(cmd, "attach")) {
         if (append(req, sizeof(req), &used, "\"id\":") || quoted(req, sizeof(req), &used, argv[i])) goto too_long;
     }
     if (!strcmp(cmd, "write")) {
@@ -328,7 +523,8 @@ int main(int argc, char **argv) {
     int handshake = exchange(fd, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}", 1, 1, NULL, 0, NULL);
     if (handshake != 0) { close(fd); return 1; }
     int result;
-    if (!strcmp(cmd, "follow")) {
+    if (!strcmp(cmd, "attach") && verify_attach_terminal(fd, argv[i])) { close(fd); return 1; }
+    if (!strcmp(cmd, "follow") || !strcmp(cmd, "attach")) {
         char *response = NULL;
         result = exchange(fd, req, 2, 0, NULL, 0, &response);
         if (result == 0) {
@@ -342,11 +538,11 @@ int main(int argc, char **argv) {
             if (result != 0) fprintf(stderr, "termux-control: invalid subscription response\n");
         }
         free(response);
-        if (result == 0) result = follow_output(fd, argv[i]);
+        if (result == 0) result = !strcmp(cmd, "attach") ? attach_loop(fd, argv[i]) : follow_output(fd, argv[i]);
     } else {
         result = exchange(fd, req, 2, 0, binary_len ? binary : NULL, binary_len, NULL);
     }
-    if (result < 0 && strcmp(cmd, "list") && strcmp(cmd, "capabilities") && strcmp(cmd, "follow"))
+    if (result < 0 && strcmp(cmd, "list") && strcmp(cmd, "capabilities") && strcmp(cmd, "follow") && strcmp(cmd, "attach"))
         fprintf(stderr, "termux-control: request outcome may be unknown; inspect session state before retrying\n");
     close(fd); return result == 0 ? 0 : 1;
 too_long:
