@@ -84,6 +84,8 @@ public final class RpcDispatcher {
             case "system.capabilities":
                 parameters(request.params);
                 List<String> methods = new ArrayList<>(mCore.capabilities());
+                if (scopes == null || !scopes.contains(ControlCore.Scope.SESSIONS_WRITE) ||
+                    !scopes.contains(ControlCore.Scope.SESSIONS_CLOSE)) methods.remove("session.close");
                 if (mOutput != null && scopes != null && scopes.contains(ControlCore.Scope.SESSIONS_OUTPUT)) {
                     methods.add("session.output.subscribe"); methods.add("session.output.read"); methods.add("session.output.unsubscribe");
                 }

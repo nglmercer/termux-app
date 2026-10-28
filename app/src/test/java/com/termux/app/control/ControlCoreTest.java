@@ -10,12 +10,13 @@ import java.util.List;
 public class ControlCoreTest extends TestCase {
     private static final class FakeBackend implements ControlCore.Backend {
         int calls;
+        boolean closeEnabled;
         String target;
         byte[] received;
         String name;
         int columns, rows;
         final List<ControlCore.SessionInfo> sessions = new ArrayList<>();
-        @Override public boolean isCloseEnabled() { return false; }
+        @Override public boolean isCloseEnabled() { return closeEnabled; }
         @Override public List<ControlCore.SessionInfo> list() { calls++; return sessions; }
         @Override public ControlCore.SessionInfo create(String name, int columns, int rows, int cellWidth, int cellHeight) {
             calls++; this.name = name; this.columns = columns; this.rows = rows;
@@ -81,16 +82,27 @@ public class ControlCoreTest extends TestCase {
         assertEquals(1, backend.calls);
     }
 
-    public void testCloseRequiresWriteScopeAndExplicitId() throws Exception {
+    public void testCloseRequiresIndependentConsentAndEnabledBackend() throws Exception {
         FakeBackend backend = new FakeBackend();
         ControlCore core = new ControlCore(backend);
+        EnumSet<ControlCore.Scope> both = EnumSet.of(ControlCore.Scope.SESSIONS_WRITE, ControlCore.Scope.SESSIONS_CLOSE);
         try { core.closeSession(Collections.emptySet(), "s1"); fail(); }
         catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.DENIED, e.code); }
-        try { core.closeSession(EnumSet.of(ControlCore.Scope.SESSIONS_WRITE), ""); fail(); }
+        try { core.closeSession(EnumSet.of(ControlCore.Scope.SESSIONS_WRITE), "s1"); fail(); }
+        catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.DENIED, e.code); }
+        try { core.closeSession(EnumSet.of(ControlCore.Scope.SESSIONS_CLOSE), "s1"); fail(); }
+        catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.DENIED, e.code); }
+        try { core.closeSession(both, ""); fail(); }
         catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.INVALID_REQUEST, e.code); }
+        try { core.closeSession(both, "s1"); fail(); }
+        catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.UNAVAILABLE, e.code); }
         assertEquals(0, backend.calls);
-        core.closeSession(EnumSet.of(ControlCore.Scope.SESSIONS_WRITE), "s1");
-        assertEquals("s1", backend.target);
+        backend.closeEnabled = true;
+        core.closeSession(both, "s1");
+        assertEquals("s1", backend.target); assertEquals(1, backend.calls);
+        backend.closeEnabled = false;
+        try { core.closeSession(both, "s1"); fail(); }
+        catch (ControlCore.ControlException e) { assertEquals(ControlCore.Error.UNAVAILABLE, e.code); }
         assertEquals(1, backend.calls);
     }
 

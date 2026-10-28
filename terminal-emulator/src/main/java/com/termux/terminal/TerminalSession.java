@@ -70,11 +70,12 @@ public final class TerminalSession extends TerminalOutput {
     private int mTerminalFileDescriptor;
     /** Optional pidfd for identity-safe signalling; owned by the main thread. */
     private int mProcessHandle = -1;
-    private static volatile boolean sProcessHandlesEnabled;
+    private static final ProcessHandlePolicy PROCESS_HANDLE_POLICY = new ProcessHandlePolicy();
+    private final long mProcessHandleConsent;
 
     /** Opt-in for newly created sessions; existing sessions do not gain a process handle. */
     public static void setProcessHandlesEnabled(boolean enabled) {
-        sProcessHandlesEnabled = enabled;
+        PROCESS_HANDLE_POLICY.setEnabled(enabled);
     }
 
     /** Set by the application for user identification of session, not by terminal. */
@@ -95,6 +96,7 @@ public final class TerminalSession extends TerminalOutput {
     private static final String LOG_TAG = "TerminalSession";
 
     public TerminalSession(String shellPath, String cwd, String[] args, String[] env, Integer transcriptRows, TerminalSessionClient client) {
+        this.mProcessHandleConsent = PROCESS_HANDLE_POLICY.capture();
         this.mShellPath = shellPath;
         this.mCwd = cwd;
         this.mArgs = args;
@@ -149,7 +151,8 @@ public final class TerminalSession extends TerminalOutput {
         }
         mShellPid = processId[0];
         // Open before the waiter starts reaping the child. Unsupported kernels return a negative errno.
-        if (mShellPid > 0 && sProcessHandlesEnabled) mProcessHandle = JNI.openProcessHandle(mShellPid);
+        if (mShellPid > 0 && PROCESS_HANDLE_POLICY.permits(mProcessHandleConsent))
+            mProcessHandle = JNI.openProcessHandle(mShellPid);
 
         final FileDescriptor terminalFileDescriptorWrapped = wrapFileDescriptor(mTerminalFileDescriptor, mClient);
 

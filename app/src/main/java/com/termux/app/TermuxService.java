@@ -924,13 +924,19 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper() || !mControlAvailable)
             throw new IllegalStateException("Control service unavailable on this thread");
         if (scopes == null || mLocalControlServer != null) return false;
+        boolean close = scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_CLOSE);
+        if (close && !scopes.contains(com.termux.app.control.ControlCore.Scope.SESSIONS_WRITE)) return false;
         com.termux.app.control.ipc.LocalControlServer server =
             new com.termux.app.control.ipc.LocalControlServer(this, mControlCore, mControlDispatch, scopes, stopped ->
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                    if (mLocalControlServer == stopped) mLocalControlServer = null;
+                    if (mLocalControlServer == stopped) {
+                        mLocalControlServer = null;
+                        if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+                    }
                 }), mOutputSubscriptions);
+        setSafeControlCloseEnabled(close);
         mLocalControlServer = server;
-        new Thread(() -> {
+        try { new Thread(() -> {
             try {
                 server.start();
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
@@ -939,11 +945,19 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
             } catch (java.io.IOException | RuntimeException e) {
                 Logger.logWarn(LOG_TAG, "Local control socket could not start");
                 new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                    if (mLocalControlServer == server && callback != null) callback.onResult(false);
+                    if (mLocalControlServer == server) {
+                        if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+                        if (callback != null) callback.onResult(false);
+                    }
                 });
                 server.requestStop();
             }
-        }, "TermuxControlStart").start();
+        }, "TermuxControlStart").start(); }
+        catch (RuntimeException e) {
+            mLocalControlServer = null;
+            if (mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
+            return false;
+        }
         return true;
     }
 
@@ -952,6 +966,7 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
             throw new IllegalStateException("Control service stop must run on the main thread");
         com.termux.app.control.ipc.LocalControlServer server = mLocalControlServer;
+        if (mControlAvailable && mSafeControlCloseEnabled) setSafeControlCloseEnabled(false);
         if (server != null) server.requestStop();
     }
 
