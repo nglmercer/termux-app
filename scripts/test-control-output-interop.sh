@@ -14,3 +14,7 @@ python tools/termux-control/test-output-interop.py "$out_dir/classes:$app_classe
 
 clang -std=c11 -O2 -Wall -Wextra -Werror tools/termux-control/termux-control.c -o "$out_dir/termux-control"
 python tools/termux-control/test-follow-host.py "$out_dir/classes:$app_classes:$terminal_classes:$GSON_JAR" "$socket_tmp" "$out_dir/termux-control"
+
+# Exercise interactive key forwarding and resize through the same simulated Java protocol loop.
+javac -cp "$app_classes:$terminal_classes:$GSON_JAR" -d "$out_dir/classes" app/src/test/host/com/termux/app/control/ipc/HostAttachSocketSmoke.java
+python tools/termux-control/test-attach-host.py "$out_dir/classes:$app_classes:$terminal_classes:$GSON_JAR" "$socket_tmp" "$out_dir/termux-control"
