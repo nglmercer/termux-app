@@ -93,6 +93,20 @@ public class RpcConnectionTest extends TestCase {
         assertEquals(1, backend.calls);
     }
 
+    public void testActiveConnectionCanExceedFormerRequestLimit() throws Exception {
+        RpcConnection connection = new RpcConnection(new ControlCore(backend), dispatch,
+            EnumSet.of(ControlCore.Scope.SESSIONS_READ), () -> true, null, () -> { });
+        ByteArrayOutputStream input = new ByteArrayOutputStream();
+        codec.write(input, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}".getBytes(StandardCharsets.UTF_8));
+        for (int i = 0; i < 1005; i++) codec.write(input,
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.list\"}".getBytes(StandardCharsets.UTF_8));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        connection.serve(1000, 1000, new ByteArrayInputStream(input.toByteArray()), out);
+        ByteArrayInputStream responses = new ByteArrayInputStream(out.toByteArray());
+        for (int i = 0; i < 1006; i++) assertNotNull(codec.read(responses));
+        assertNull(codec.read(responses)); assertEquals(1005, backend.calls);
+    }
+
     public void testBinaryFrameTargetsExplicitSessionWithoutCorruptingNextRequest() throws Exception {
         RpcConnection connection = new RpcConnection(new ControlCore(backend), dispatch,
             EnumSet.of(ControlCore.Scope.SESSIONS_READ, ControlCore.Scope.SESSIONS_WRITE), () -> true);

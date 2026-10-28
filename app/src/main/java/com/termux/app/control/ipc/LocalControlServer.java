@@ -30,7 +30,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class LocalControlServer implements AutoCloseable {
     private static final int MAX_CLIENTS = 20;
     private static final int IDLE_TIMEOUT_MS = 5000;
-    private static final long CONNECTION_LIFETIME_MS = 60000;
     public interface StopListener { void onStopped(LocalControlServer server); }
     private final Context mContext;
     private final StopListener mStopListener;
@@ -143,7 +142,8 @@ public final class LocalControlServer implements AutoCloseable {
             client.setSoTimeout(IDLE_TIMEOUT_MS);
             Os.setsockoptTimeval(client.getFileDescriptor(), OsConstants.SOL_SOCKET, OsConstants.SO_SNDTIMEO,
                 StructTimeval.fromMillis(IDLE_TIMEOUT_MS));
-            InputStream input = new DeadlineInput(client, client.getInputStream(), SystemClock.elapsedRealtime() + CONNECTION_LIFETIME_MS);
+            InputStream input = new FrameDeadlineInput(client.getInputStream(), SystemClock::elapsedRealtime,
+                client::setSoTimeout, IDLE_TIMEOUT_MS);
             RpcConnection connection = new RpcConnection(mCore, mDispatch, mScopes, this::isRunning, mOutputRegistry);
             connection.serve(Process.myUid(), peerUid, input, client.getOutputStream());
         } catch (IOException | ErrnoException | RuntimeException ignored) {
@@ -187,19 +187,5 @@ public final class LocalControlServer implements AutoCloseable {
         } catch (ErrnoException ignored) { }
     }
 
-    private static final class DeadlineInput extends InputStream {
-        private final LocalSocket socket;
-        private final InputStream input;
-        private final long deadline;
-        DeadlineInput(LocalSocket socket, InputStream input, long deadline) {
-            this.socket = socket; this.input = input; this.deadline = deadline;
-        }
-        private void setTimeout() throws IOException {
-            long remaining = deadline - SystemClock.elapsedRealtime();
-            if (remaining <= 0) throw new IOException("Connection deadline exceeded");
-            socket.setSoTimeout((int) Math.max(1, Math.min(IDLE_TIMEOUT_MS, remaining)));
-        }
-        @Override public int read() throws IOException { setTimeout(); return input.read(); }
-        @Override public int read(byte[] b, int off, int len) throws IOException { setTimeout(); return input.read(b, off, len); }
-    }
+
 }

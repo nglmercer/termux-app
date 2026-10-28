@@ -10,11 +10,13 @@ import java.util.Set;
 /** Protocol loop for one already accepted connection. The transport supplies verified peer credentials. */
 final class RpcConnection {
     interface Running { boolean get(); }
+    interface RequestPermit { void await() throws InterruptedException; }
     private final ControlCore mCore;
     private final ServiceThreadDispatch mDispatch;
     private final Set<ControlCore.Scope> mScopes;
     private final Running mRunning;
     private final OutputSubscriptions mOutputRegistry;
+    private final RequestPermit mPermit;
 
     RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running) {
         this(core, dispatch, scopes, running, null);
@@ -22,7 +24,12 @@ final class RpcConnection {
 
     RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running,
                   OutputSubscriptions outputRegistry) {
-        mCore = core; mDispatch = dispatch; mScopes = scopes; mRunning = running; mOutputRegistry = outputRegistry;
+        this(core, dispatch, scopes, running, outputRegistry, new RequestRateLimiter(System.nanoTime())::await);
+    }
+    RpcConnection(ControlCore core, ServiceThreadDispatch dispatch, Set<ControlCore.Scope> scopes, Running running,
+                  OutputSubscriptions outputRegistry, RequestPermit permit) {
+        if (permit == null) throw new IllegalArgumentException("Missing request limiter");
+        mCore = core; mDispatch = dispatch; mScopes = scopes; mRunning = running; mOutputRegistry = outputRegistry; mPermit = permit;
     }
 
     /** Peer UID is supplied by the operating system, never by the incoming frame. */
@@ -33,7 +40,10 @@ final class RpcConnection {
         OutputClientLease lease = mOutputRegistry == null ? null : new OutputClientLease(mOutputRegistry, mDispatch, mScopes);
         RpcDispatcher dispatcher = new RpcDispatcher(mCore, lease);
         try {
-        for (int i = 0; mRunning.get() && i < 1000; i++) {
+        while (mRunning.get()) {
+            try { mPermit.await(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+            if (!mRunning.get()) return;
             byte[] body = frames.read(input);
             if (body == null) return;
             RpcRequestParser.Request request;
