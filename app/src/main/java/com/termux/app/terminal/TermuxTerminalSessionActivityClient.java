@@ -21,6 +21,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.termux.R;
+import com.termux.app.terminal.clipboard.ImagePreview;
 import com.termux.app.terminal.clipboard.ClipboardImageImporter;
 import com.termux.app.terminal.clipboard.ClipboardPastePolicy;
 import com.termux.app.terminal.clipboard.ClipboardTextReader;
@@ -67,11 +68,13 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         final List<File> files;
         final int errorMessage;
         final ClipboardImageLimits limits;
-        ImageImportResult(String sessionHandle, List<File> files, int errorMessage, ClipboardImageLimits limits) {
+        final android.graphics.Bitmap preview;
+        ImageImportResult(String sessionHandle, List<File> files, int errorMessage, ClipboardImageLimits limits, android.graphics.Bitmap preview) {
             this.sessionHandle = sessionHandle;
             this.files = files;
             this.errorMessage = errorMessage;
             this.limits = limits;
+            this.preview = preview;
         }
     }
 
@@ -343,7 +346,8 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             } finally {
                 try { releasePermission.run(); } catch (RuntimeException ignored) { }
             }
-            final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage, limits);
+            android.graphics.Bitmap preview = files == null || files.isEmpty() ? null : ImagePreview.decode(files.get(0));
+            final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage, limits, preview);
             new Handler(Looper.getMainLooper()).post(() -> {
                 sPendingImageResult = result;
                 TermuxTerminalSessionActivityClient client = sVisibleImageClient.get();
@@ -368,6 +372,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         if (target == null && result.files != null) return;
         sPendingImageResult = null;
         IMAGE_IMPORT_IN_PROGRESS.set(false);
+        boolean previewUsed = false;
         if (result.files == null) {
             mActivity.showToast(result.errorMessage == R.string.clipboard_image_size_limit ?
                 mActivity.getString(result.errorMessage, result.limits.fileMiB, result.limits.batchMiB) :
@@ -375,11 +380,46 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         } else if (!result.sessionHandle.equals(target.mHandle) || !target.isRunning() || target.getEmulator() == null) {
             mActivity.showToast(mActivity.getString(R.string.clipboard_image_session_changed, result.files.get(0).getParent()), true);
         } else if (target.getEmulator().tryPaste(ClipboardImageImporter.quotePaths(result.files))) {
-            mActivity.showToast(mActivity.getString(R.string.clipboard_image_imported), false);
+            previewUsed = showImageImportPreview(result.preview, result.files.size());
         } else {
             // Run after the queue's rejection notification so the recovery location stays visible.
             mActivity.getTerminalView().post(() -> mActivity.showToast(
                 mActivity.getString(R.string.clipboard_image_not_pasted, result.files.get(0).getParent()), true));
+        }
+        if (result.preview != null && !previewUsed) result.preview.recycle();
+    }
+
+    private boolean showImageImportPreview(android.graphics.Bitmap preview, int count) {
+        String message = mActivity.getResources().getQuantityString(R.plurals.clipboard_image_imported_count, count, count);
+        if (preview == null) { mActivity.showToast(message, false); return false; }
+        try {
+            android.widget.LinearLayout content = new android.widget.LinearLayout(mActivity);
+            content.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            content.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            int padding = (int) (12 * mActivity.getResources().getDisplayMetrics().density);
+            content.setPadding(padding, padding, padding, padding);
+            android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
+            background.setColor(0xff323232);
+            background.setCornerRadius(padding);
+            content.setBackground(background);
+            android.widget.ImageView thumbnail = new android.widget.ImageView(mActivity);
+            thumbnail.setImageBitmap(preview);
+            thumbnail.setContentDescription(mActivity.getString(R.string.clipboard_image_preview));
+            int size = (int) (56 * mActivity.getResources().getDisplayMetrics().density);
+            content.addView(thumbnail, new android.widget.LinearLayout.LayoutParams(size, size));
+            android.widget.TextView text = new android.widget.TextView(mActivity);
+            text.setText(message); text.setTextColor(android.graphics.Color.WHITE);
+            text.setMaxWidth((int) (220 * mActivity.getResources().getDisplayMetrics().density));
+            text.setPadding(padding, 0, 0, 0);
+            content.addView(text);
+            android.widget.Toast toast = new android.widget.Toast(mActivity);
+            toast.setDuration(android.widget.Toast.LENGTH_LONG);
+            toast.setView(content);
+            toast.show();
+            return true;
+        } catch (RuntimeException e) {
+            mActivity.showToast(message, false);
+            return false;
         }
     }
 
