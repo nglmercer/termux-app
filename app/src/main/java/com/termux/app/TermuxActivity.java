@@ -28,6 +28,7 @@ import android.widget.Toast;
 
 import com.termux.R;
 import com.termux.app.monitor.ProcessSnapshot;
+import com.termux.app.monitor.ProcessTable;
 import com.termux.app.monitor.DeviceSnapshot;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
@@ -201,6 +202,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private ProcessSnapshot mPreviousProcessSnapshot;
     private java.util.Set<Integer> mPreviousProcessRoots;
     private long mPreviousProcessSnapshotTime;
+    private android.widget.TextView mProcessText;
+    private EditText mProcessSearch;
+    private android.widget.Spinner mProcessSort;
+    private ProcessTable mProcessTable;
+    private String mProcessHeader;
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -812,9 +818,33 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (mProcessDialog != null) return;
         mProcessAutoRefresh = true;
         ++mProcessDialogGeneration;
+        android.widget.LinearLayout panel = new android.widget.LinearLayout(this);
+        panel.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        panel.setPadding(padding, 0, padding, 0);
+        mProcessSearch = new EditText(this);
+        mProcessSearch.setSingleLine(true);
+        mProcessSearch.setHint(R.string.process_snapshot_search);
+        mProcessSearch.setContentDescription(getString(R.string.process_snapshot_search));
+        mProcessSearch.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(100)});
+        panel.addView(mProcessSearch);
+        mProcessSort = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<CharSequence> sorts = android.widget.ArrayAdapter.createFromResource(this,
+            R.array.process_snapshot_sorts, android.R.layout.simple_spinner_item);
+        sorts.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        mProcessSort.setAdapter(sorts);
+        mProcessSort.setContentDescription(getString(R.string.process_snapshot_sort));
+        panel.addView(mProcessSort);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        mProcessText = new android.widget.TextView(this);
+        mProcessText.setText(R.string.process_snapshot_loading);
+        scroll.addView(mProcessText);
+        int tableHeight = Math.min((int) (320 * getResources().getDisplayMetrics().density),
+            getResources().getDisplayMetrics().heightPixels / 2);
+        panel.addView(scroll, new android.widget.LinearLayout.LayoutParams(-1, tableHeight));
         AlertDialog dialog = new AlertDialog.Builder(this)
             .setTitle(R.string.action_process_snapshot)
-            .setMessage(R.string.process_snapshot_loading)
+            .setView(panel)
             .setPositiveButton(R.string.process_snapshot_refresh, null)
             .setNeutralButton(R.string.process_snapshot_pause, null)
             .setNegativeButton(android.R.string.cancel, null).create();
@@ -826,6 +856,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
             mPreviousProcessSnapshot = null;
             mPreviousProcessRoots = null;
+            mProcessTable = null; mProcessHeader = null; mProcessText = null; mProcessSearch = null; mProcessSort = null;
         });
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> loadProcessSnapshot());
@@ -836,6 +867,15 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
                 if (mProcessAutoRefresh) loadProcessSnapshot();
             });
+        });
+        mProcessSearch.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            public void onTextChanged(CharSequence s, int start, int before, int count) { renderProcessTable(); }
+            public void afterTextChanged(android.text.Editable s) { }
+        });
+        mProcessSort.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) { renderProcessTable(); }
+            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
         dialog.show();
         loadProcessSnapshot();
@@ -853,12 +893,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         TermuxService service = getTermuxService();
         if (service == null) {
             mProcessSnapshotBusy.set(false);
-            mProcessDialog.setMessage(getString(R.string.process_snapshot_failed));
+            setProcessMessage(getString(R.string.process_snapshot_failed));
             scheduleProcessRefresh();
             return;
         }
         final TermuxService.MonitorRoots monitorRoots = service.getMonitorRoots();
         final java.util.Set<Integer> roots = monitorRoots.pids;
+        final ProcessSnapshot prior = roots.equals(mPreviousProcessRoots) ? mPreviousProcessSnapshot : null;
+        final long priorTime = mPreviousProcessSnapshotTime;
         final java.util.concurrent.atomic.AtomicBoolean busy = mProcessSnapshotBusy;
         final WeakReference<TermuxActivity> activity = new WeakReference<>(this);
         final Context appContext = getApplicationContext();
@@ -876,6 +918,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     pageValue = android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE);
                 } catch (RuntimeException ignored) { }
                 final long ticksPerSecond = tickValue, pageSize = pageValue;
+                ProcessTable prepared;
+                try { prepared = snapshot == null ? null : new ProcessTable(snapshot, prior, sampledAt - priorTime, ticksPerSecond, pageSize); }
+                catch (RuntimeException e) { prepared = null; }
+                final ProcessTable table = prepared;
                 final DeviceSnapshot device = DeviceSnapshot.collect(appContext);
                 main.post(() -> {
                     busy.set(false);
@@ -885,16 +931,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                         if (current.mProcessAutoRefresh) current.loadProcessSnapshot();
                         return;
                     }
-                    if (snapshot == null) {
-                        current.mProcessDialog.setMessage(current.getString(R.string.process_snapshot_failed));
+                    if (snapshot == null || table == null) {
+                        current.setProcessMessage(current.getString(R.string.process_snapshot_failed));
                     } else {
                         TermuxService currentService = current.getTermuxService();
                         TermuxService.MonitorRoots currentRoots = currentService == null ? null : currentService.getMonitorRoots();
                         if (currentRoots == null || !roots.equals(currentRoots.pids) ||
                             monitorRoots.unknownTaskPids != currentRoots.unknownTaskPids) {
-                            current.mProcessDialog.setMessage(current.getString(R.string.process_snapshot_changed));
+                            current.setProcessMessage(current.getString(R.string.process_snapshot_changed));
                         } else {
-                            current.showProcessSnapshot(snapshot, device, roots, monitorRoots.unknownTaskPids, sampledAt, ticksPerSecond, pageSize);
+                            current.showProcessSnapshot(snapshot, table, device, roots, monitorRoots.unknownTaskPids, sampledAt);
                         }
                     }
                     current.scheduleProcessRefresh();
@@ -902,17 +948,14 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             }, "TermuxProcessSnapshot").start();
         } catch (RuntimeException e) {
             busy.set(false);
-            mProcessDialog.setMessage(getString(R.string.process_snapshot_failed));
+            setProcessMessage(getString(R.string.process_snapshot_failed));
             scheduleProcessRefresh();
         }
     }
 
-    private void showProcessSnapshot(ProcessSnapshot snapshot, DeviceSnapshot device, java.util.Set<Integer> roots, int unknownTaskPids,
-                                     long sampledAt, long ticksPerSecond, long pageSize) {
-        java.util.Map<Integer, ProcessSnapshot.Entry> previous = new java.util.HashMap<>();
-        if (mPreviousProcessSnapshot != null && roots.equals(mPreviousProcessRoots))
-            for (ProcessSnapshot.Entry entry : mPreviousProcessSnapshot.entries) previous.put(entry.pid, entry);
-        long elapsed = sampledAt - mPreviousProcessSnapshotTime;
+    private void showProcessSnapshot(ProcessSnapshot snapshot, ProcessTable table, DeviceSnapshot device, java.util.Set<Integer> roots, int unknownTaskPids,
+                                     long sampledAt) {
+        mProcessTable = table;
         mPreviousProcessSnapshot = snapshot;
         mPreviousProcessRoots = roots;
         mPreviousProcessSnapshotTime = sampledAt;
@@ -932,21 +975,36 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (snapshot.incomplete || snapshot.missingRoots > 0)
             text.append("\n\n").append(getString(R.string.process_snapshot_incomplete, snapshot.missingRoots));
         if (unknownTaskPids > 0) text.append("\n\n").append(getString(R.string.process_snapshot_unknown_tasks, unknownTaskPids));
-        if (snapshot.entries.isEmpty()) text.append("\n\n").append(getString(R.string.process_snapshot_empty));
-        int count = Math.min(snapshot.entries.size(), 100);
+        mProcessHeader = text.toString();
+        renderProcessTable();
+    }
+
+    private void setProcessMessage(String message) {
+        mProcessTable = null; mProcessHeader = null;
+        if (mProcessText != null) mProcessText.setText(message);
+    }
+
+    private void renderProcessTable() {
+        if (mProcessText == null || mProcessTable == null || mProcessSearch == null || mProcessSort == null) return;
+        int position = mProcessSort.getSelectedItemPosition();
+        ProcessTable.Sort[] sorts = ProcessTable.Sort.values();
+        ProcessTable.Sort sort = position >= 0 && position < sorts.length ? sorts[position] : ProcessTable.Sort.PID;
+        java.util.List<ProcessTable.Row> rows = mProcessTable.select(mProcessSearch.getText().toString(), sort);
+        StringBuilder text = new StringBuilder(mProcessHeader);
+        if (rows.isEmpty()) text.append("\n\n").append(getString(R.string.process_snapshot_empty_search));
+        int count = Math.min(rows.size(), 100);
         for (int i = 0; i < count; i++) {
-            ProcessSnapshot.Entry entry = snapshot.entries.get(i);
+            ProcessTable.Row row = rows.get(i);
+            ProcessSnapshot.Entry entry = row.entry;
             String name = entry.name.substring(0, Math.min(entry.name.length(), 80)).replaceAll("[\\p{Cntrl}]", "?");
-            Long rss = ProcessSnapshot.rssKiB(entry.rssPages, pageSize);
-            Double cpu = ProcessSnapshot.cpuPercent(previous.get(entry.pid), entry, elapsed, ticksPerSecond);
-            String rssText = rss == null ? getString(R.string.diagnostics_unknown) : getString(R.string.process_snapshot_rss, rss);
-            String cpuText = cpu == null ? getString(R.string.diagnostics_unknown) :
-                String.format(java.util.Locale.getDefault(), "%.1f%%", cpu);
+            String rssText = row.rssKiB == null ? getString(R.string.diagnostics_unknown) : getString(R.string.process_snapshot_rss, row.rssKiB);
+            String cpuText = row.cpuPercent == null ? getString(R.string.diagnostics_unknown) :
+                String.format(java.util.Locale.getDefault(), "%.1f%%", row.cpuPercent);
             text.append("\n\n").append(getString(R.string.process_snapshot_entry,
                 entry.pid, entry.ppid, name, String.valueOf(entry.state), rssText, cpuText));
         }
-        if (snapshot.entries.size() > count) text.append("\n\n").append(getString(R.string.process_snapshot_truncated));
-        if (mProcessDialog != null) mProcessDialog.setMessage(text.toString());
+        if (rows.size() > count) text.append("\n\n").append(getString(R.string.process_snapshot_truncated));
+        mProcessText.setText(text.toString());
     }
 
     private String thermalStatusLabel(int status) {
