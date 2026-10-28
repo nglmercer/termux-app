@@ -145,7 +145,7 @@ public class ExecutionCommand {
     public Integer id;
 
     /** The process id of command. */
-    public int mPid = -1;
+    public volatile int mPid = -1;
 
     /** The current state of the {@link ExecutionCommand}. */
     private ExecutionState currentState = ExecutionState.PRE_EXECUTION;
