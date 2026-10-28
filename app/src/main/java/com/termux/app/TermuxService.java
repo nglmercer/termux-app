@@ -1042,20 +1042,23 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
     /** PID hints for read-only monitoring. PIDs do not confer signalling authority. */
     public static final class MonitorRoots {
-        public final java.util.Set<Integer> pids;
+        public final java.util.Set<Integer> pids, sessions, tasks;
         public final int unknownTaskPids;
-        MonitorRoots(java.util.Set<Integer> pids, int unknownTaskPids) {
-            this.pids = java.util.Collections.unmodifiableSet(pids);
+        MonitorRoots(java.util.Set<Integer> sessions, java.util.Set<Integer> tasks, int unknownTaskPids) {
+            this.sessions = java.util.Collections.unmodifiableSet(new java.util.HashSet<>(sessions));
+            this.tasks = java.util.Collections.unmodifiableSet(new java.util.HashSet<>(tasks));
+            java.util.Set<Integer> all = new java.util.HashSet<>(sessions); all.addAll(tasks);
+            this.pids = java.util.Collections.unmodifiableSet(all);
             this.unknownTaskPids = unknownTaskPids;
         }
     }
 
     /** Capture only existing service-owned roots; process traversal happens off the main thread. */
     public synchronized MonitorRoots getMonitorRoots() {
-        java.util.Set<Integer> pids = new java.util.HashSet<>();
+        java.util.Set<Integer> sessions = new java.util.HashSet<>(), tasks = new java.util.HashSet<>();
         for (TermuxSession item : mShellManager.mTermuxSessions) {
             int pid = item.getTerminalSession().getPid();
-            if (pid > 0) pids.add(pid);
+            if (pid > 0) sessions.add(pid);
         }
         int unknown = 0;
         for (AppShell task : mShellManager.mTermuxTasks) {
@@ -1063,10 +1066,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
                 task.getProcess().exitValue(); // Already exited; the service callback may still be pending.
             } catch (IllegalThreadStateException running) {
                 int pid = task.getExecutionCommand().mPid;
-                if (pid > 0) pids.add(pid); else unknown++;
+                if (pid > 0) tasks.add(pid); else unknown++;
             }
         }
-        return new MonitorRoots(pids, unknown);
+        return new MonitorRoots(sessions, tasks, unknown);
     }
 
     public synchronized int getTermuxSessionsSize() {
