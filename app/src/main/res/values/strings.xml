@@ -236,6 +236,10 @@
     <string name="donate_preference_title">Donate</string>
 
     <string name="terminal_input_queue_full">Terminal input was not sent. The input buffer is full or the session is closed. Wait and try again.</string>
+    <string name="clipboard_type_unsupported">This clipboard item is not supported. Copy text or choose a PNG, JPEG, or WebP image.</string>
+    <string name="clipboard_text_busy">A clipboard text import is already in progress.</string>
+    <string name="clipboard_text_failed">Could not read clipboard text. Copy it again; text from a content provider is limited to 1 MiB.</string>
+    <string name="clipboard_text_session_changed">The terminal session changed. Copy and paste the text again in the intended session.</string>
     <string name="clipboard_image_too_many">Paste at most eight images at a time.</string>
     <string name="clipboard_image_busy">An image import is already in progress.</string>
     <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type. Limits are 20 MiB per image, 40 MiB per batch, and 100 MiB in the image cache.</string>
