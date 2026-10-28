@@ -12,6 +12,10 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.Arrays;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
 /** Append-only properties edits. All methods perform disk I/O and must run on a worker. */
@@ -27,6 +31,18 @@ public final class ExtraKeyPropertyStore {
         public File file() { return file; }
         public boolean existed() { return existed; }
         public byte[] bytes() { return bytes.clone(); }
+        /** Compact identity for restoring an editor without trusting a newly read baseline. */
+        public byte[] fingerprint() {
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] name = file.getAbsolutePath().getBytes(StandardCharsets.UTF_8);
+                digest.update(ByteBuffer.allocate(4).putInt(name.length).array());
+                digest.update(name);
+                digest.update((byte) (existed ? 1 : 0));
+                digest.update(ByteBuffer.allocate(16).putLong(device).putLong(inode).array());
+                return digest.digest(bytes);
+            } catch (NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+        }
     }
     public static final class SaveResult {
         public final File backup;

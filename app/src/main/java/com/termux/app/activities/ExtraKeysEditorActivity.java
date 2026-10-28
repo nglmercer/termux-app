@@ -23,6 +23,7 @@ import com.google.gson.JsonObject;
 import com.termux.R;
 import com.termux.app.extrakeys.ExtraKeyLayout;
 import com.termux.app.extrakeys.ExtraKeyDocument;
+import com.termux.app.extrakeys.ExtraKeyRecovery;
 import com.termux.app.extrakeys.ExtraKeyPropertyStore;
 import com.termux.shared.settings.properties.SharedProperties;
 import com.termux.shared.termux.TermuxConstants;
@@ -46,6 +47,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ExtraKeysEditorActivity extends AppCompatActivity {
     private static final AtomicBoolean RELOAD_NEEDED = new AtomicBoolean();
     private static final int REQUEST_IMPORT = 48380, REQUEST_EXPORT = 48381;
+    private static final String STATE_EDITOR = "extraKeysEditor", STATE_LAYOUT = "layout", STATE_ORIGINAL = "original",
+        STATE_PROOF = "proof", STATE_BLOCKED = "blocked", STATE_PENDING_URI = "pendingUri", STATE_PENDING_REQUEST = "pendingRequest";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private LinearLayout content;
@@ -55,11 +58,20 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
     private ExtraKeyPropertyStore.Snapshot snapshot;
     private String originalLayout;
     private boolean busy, saving, saveBlocked;
+    private byte[] snapshotProof;
+    private Bundle recovery;
+    private Uri pendingUri;
+    private int pendingRequest;
 
     public static boolean consumeReloadNeeded() { return RELOAD_NEEDED.getAndSet(false); }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) {
+            recovery = state.getBundle(STATE_EDITOR);
+            String uri = state.getString(STATE_PENDING_URI);
+            if (uri != null) { pendingUri = Uri.parse(uri); pendingRequest = state.getInt(STATE_PENDING_REQUEST); }
+        }
         setTitle(R.string.extra_keys_editor_title);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -127,20 +139,40 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
                 original = layoutFrom(result.bytes());
                 parsed = ExtraKeyLayout.parse(original);
                 new ExtraKeysInfo(parsed.toJson(), "default", ExtraKeysConstants.CONTROL_CHARS_ALIASES);
-            } catch (Exception ignored) { }
+            } catch (Exception ignored) { parsed = null; }
             final ExtraKeyPropertyStore.Snapshot loaded = result;
             final ExtraKeyLayout model = parsed;
             final String initial = original;
+            final byte[] proof = loaded == null ? null : loaded.fingerprint();
             handler.post(() -> {
                 ExtraKeysEditorActivity current = ref.get();
                 if (current == null || current.isFinishing() || current.isDestroyed()) return;
                 current.busy = false;
-                if (loaded == null || model == null) {
+                if (loaded == null || (model == null && current.recovery == null)) {
                     current.saveBlocked = true; current.status.setText(R.string.extra_keys_editor_load_failed); return;
                 }
-                current.snapshot = loaded; current.layout = model; current.originalLayout = initial;
-                current.status.setText(current.getString(R.string.extra_keys_editor_explanation, loaded.file().getAbsolutePath()));
+                current.snapshot = loaded; current.snapshotProof = proof; current.layout = model; current.originalLayout = initial;
+                if (current.recovery != null) {
+                    Bundle saved = current.recovery;
+                    current.recovery = null;
+                    try {
+                        ExtraKeyRecovery restored = ExtraKeyRecovery.restore(saved.getString(STATE_LAYOUT), saved.getString(STATE_ORIGINAL),
+                            saved.getByteArray(STATE_PROOF), proof, saved.getBoolean(STATE_BLOCKED));
+                        current.layout = restored.layout; current.originalLayout = restored.original;
+                        current.saveBlocked = restored.saveBlocked || model == null;
+                    } catch (Exception e) { current.saveBlocked = true; }
+                }
+                if (current.layout == null) {
+                    current.status.setText(R.string.extra_keys_editor_load_failed); return;
+                }
+                current.status.setText(current.saveBlocked ? current.getString(R.string.extra_keys_editor_restore_conflict) :
+                    current.getString(R.string.extra_keys_editor_explanation, loaded.file().getAbsolutePath()));
                 current.render();
+                if (current.pendingUri != null) {
+                    Uri uri = current.pendingUri; int request = current.pendingRequest;
+                    current.pendingUri = null; current.pendingRequest = 0;
+                    current.transfer(request, uri);
+                }
             });
         });
     }
@@ -272,7 +304,14 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
         if (requestCode != REQUEST_IMPORT && requestCode != REQUEST_EXPORT) return;
         if (resultCode != Activity.RESULT_OK) return;
         Uri uri = data == null ? null : data.getData();
-        if (busy || layout == null || snapshot == null || uri == null || !"content".equals(uri.getScheme())) {
+        if (uri != null && "content".equals(uri.getScheme()) && layout == null && !saveBlocked) {
+            pendingUri = uri; pendingRequest = requestCode; return;
+        }
+        transfer(requestCode, uri);
+    }
+
+    private void transfer(int requestCode, Uri uri) {
+        if ((requestCode != REQUEST_IMPORT && requestCode != REQUEST_EXPORT) || busy || layout == null || snapshot == null || uri == null || !"content".equals(uri.getScheme())) {
             message(R.string.extra_keys_editor_transfer_failed); return;
         }
         final ExtraKeyLayout exported;
@@ -310,7 +349,8 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
                 ExtraKeysEditorActivity current = ref.get();
                 if (current == null || current.isFinishing() || current.isDestroyed()) return;
                 current.busy = false;
-                current.status.setText(current.getString(R.string.extra_keys_editor_explanation, current.snapshot.file().getAbsolutePath()));
+                current.status.setText(current.saveBlocked ? current.getString(R.string.extra_keys_editor_restore_conflict) :
+                    current.getString(R.string.extra_keys_editor_explanation, current.snapshot.file().getAbsolutePath()));
                 if (completed && requestCode == REQUEST_IMPORT) current.layout = result;
                 current.render();
                 current.message(completed ? (requestCode == REQUEST_IMPORT ? R.string.extra_keys_editor_imported : R.string.extra_keys_editor_exported) :
@@ -363,6 +403,23 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
             });
         });
     }
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        Bundle saved = recovery == null ? null : new Bundle(recovery);
+        if (layout != null && snapshotProof != null && originalLayout != null) {
+            saved = new Bundle();
+            saved.putString(STATE_LAYOUT, layout.toJson());
+            saved.putString(STATE_ORIGINAL, originalLayout);
+            saved.putByteArray(STATE_PROOF, snapshotProof);
+            saved.putBoolean(STATE_BLOCKED, saveBlocked || saving);
+        }
+        if (saved != null) out.putBundle(STATE_EDITOR, saved);
+        if (pendingUri != null) {
+            out.putString(STATE_PENDING_URI, pendingUri.toString());
+            out.putInt(STATE_PENDING_REQUEST, pendingRequest);
+        }
+    }
+
     private void message(int text) { new AlertDialog.Builder(this).setMessage(text).setPositiveButton(android.R.string.ok, null).show(); }
     @Override public void onBackPressed() { if (!saving) super.onBackPressed(); }
     @Override protected void onDestroy() {
