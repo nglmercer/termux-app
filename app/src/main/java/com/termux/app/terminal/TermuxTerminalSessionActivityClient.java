@@ -22,6 +22,8 @@ import androidx.annotation.Nullable;
 
 import com.termux.R;
 import com.termux.app.terminal.clipboard.ClipboardImageImporter;
+import com.termux.app.terminal.clipboard.ClipboardPastePolicy;
+import com.termux.app.terminal.clipboard.ClipboardTextReader;
 import com.termux.app.terminal.clipboard.ImageImportException;
 import com.termux.shared.interact.ShareUtils;
 import com.termux.shared.termux.shell.command.runner.terminal.TermuxSession;
@@ -54,6 +56,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
 
     private static final int MAX_SESSIONS = 8;
     private static final AtomicBoolean IMAGE_IMPORT_IN_PROGRESS = new AtomicBoolean();
+    private static final AtomicBoolean TEXT_URI_IN_PROGRESS = new AtomicBoolean();
     // Accessed on the main thread only; neither field retains an Activity.
     private static WeakReference<TermuxTerminalSessionActivityClient> sVisibleImageClient = new WeakReference<>(null);
     private static ImageImportResult sPendingImageResult;
@@ -228,7 +231,12 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         if (clip == null || clip.getItemCount() == 0) return;
         ClipDescription description = clip.getDescription();
         ClipData.Item first = clip.getItemAt(0);
-        if (first.getText() == null && description != null && description.hasMimeType("image/*")) {
+        CharSequence directText = first.getText();
+        Uri firstUri = first.getUri();
+        ClipboardPastePolicy.Kind kind = ClipboardPastePolicy.classify(directText,
+            description != null && description.hasMimeType("image/*"),
+            description != null && description.hasMimeType("text/*"), firstUri == null ? null : firstUri.getScheme());
+        if (kind == ClipboardPastePolicy.Kind.IMAGE) {
             if (clip.getItemCount() > ClipboardImageImporter.MAX_BATCH_ITEMS) {
                 mActivity.showToast(mActivity.getString(R.string.clipboard_image_too_many), true);
                 return;
@@ -245,8 +253,49 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             importClipboardImages(target, uris);
             return;
         }
-        CharSequence text = first.coerceToText(mActivity);
-        if (text != null && text.length() > 0) target.getEmulator().paste(text.toString());
+        if (kind == ClipboardPastePolicy.Kind.TEXT) {
+            if (directText.length() > 0) target.getEmulator().paste(directText.toString());
+        } else if (kind == ClipboardPastePolicy.Kind.WEB_URI) {
+            target.getEmulator().paste(firstUri.toString());
+        } else if (kind == ClipboardPastePolicy.Kind.TEXT_URI) {
+            pasteTextUri(target, firstUri);
+        } else {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_type_unsupported), true);
+        }
+    }
+
+    private void pasteTextUri(TerminalSession target, Uri uri) {
+        if (!TEXT_URI_IN_PROGRESS.compareAndSet(false, true)) {
+            mActivity.showToast(mActivity.getString(R.string.clipboard_text_busy), true); return;
+        }
+        final Context context = mActivity.getApplicationContext();
+        final String handle = target.mHandle;
+        try {
+            new Thread(() -> {
+                String text = null;
+                try (android.content.res.AssetFileDescriptor descriptor = context.getContentResolver()
+                        .openTypedAssetFileDescriptor(uri, "text/*", null)) {
+                    if (descriptor != null) try (InputStream input = descriptor.createInputStream()) {
+                        text = ClipboardTextReader.read(input);
+                    }
+                } catch (Exception ignored) { /* Do not log clipboard data or URI. */ }
+                final String result = text;
+                boolean posted = new Handler(Looper.getMainLooper()).post(() -> {
+                    TEXT_URI_IN_PROGRESS.set(false);
+                    TermuxTerminalSessionActivityClient client = sVisibleImageClient.get();
+                    if (client == null || !client.mActivity.isVisible()) return;
+                    TerminalSession current = client.mActivity.getCurrentSession();
+                    if (result == null) client.mActivity.showToast(client.mActivity.getString(R.string.clipboard_text_failed), true);
+                    else if (current == null || !handle.equals(current.mHandle) || !current.isRunning() || current.getEmulator() == null)
+                        client.mActivity.showToast(client.mActivity.getString(R.string.clipboard_text_session_changed), true);
+                    else if (!result.isEmpty()) current.getEmulator().tryPaste(result);
+                });
+                if (!posted) TEXT_URI_IN_PROGRESS.set(false);
+            }, "TermuxClipboardTextImport").start();
+        } catch (RuntimeException e) {
+            TEXT_URI_IN_PROGRESS.set(false);
+            mActivity.showToast(mActivity.getString(R.string.clipboard_text_failed), true);
+        }
     }
 
     public void importClipboardImages(TerminalSession target, List<Uri> uris) {
@@ -279,7 +328,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
             } catch (Exception e) {
                 // Do not log clipboard contents or provider URIs.
             } finally {
-                releasePermission.run();
+                try { releasePermission.run(); } catch (RuntimeException ignored) { }
             }
             final ImageImportResult result = new ImageImportResult(sessionHandle, files, errorMessage);
             new Handler(Looper.getMainLooper()).post(() -> {
