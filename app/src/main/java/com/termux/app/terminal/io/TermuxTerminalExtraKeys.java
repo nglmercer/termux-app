@@ -46,7 +46,7 @@ public class TermuxTerminalExtraKeys extends TerminalExtraKeys {
     /**
      * Set the terminal extra keys and style.
      */
-    private void setExtraKeys() {
+    public void setExtraKeys() {
         mExtraKeysInfo = null;
 
         try {

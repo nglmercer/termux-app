@@ -30,6 +30,17 @@ public class ExtraKeyLayoutTest extends TestCase {
         layout.key(0, 0).getAsJsonObject().addProperty("key", "changed");
         assertEquals("ESC", layout.key(0, 0).getAsJsonObject().get("key").getAsString());
     }
+    public void testExplicitReplacementValidatesAndPreservesOtherKeys() throws Exception {
+        ExtraKeyLayout layout = ExtraKeyLayout.parse("[[{key:'ESC',future:{x:1}},'TAB']]");
+        String before = layout.toJson();
+        try { layout.replaceKeyJson(1, 0, "bad"); fail(); } catch (IndexOutOfBoundsException expected) { }
+        assertEquals(before, layout.toJson());
+        try { layout.replaceKeyJson(0, 0, "{key:'ESC',macro:'CTRL c'}"); fail(); } catch (IOException expected) { }
+        assertEquals(before, layout.toJson());
+        layout.replaceKeyJson(0, 1, "{macro:'CTRL c',display:'Interrupt'}");
+        assertEquals(1, layout.key(0, 0).getAsJsonObject().getAsJsonObject("future").get("x").getAsInt());
+        assertEquals("CTRL c", layout.key(0, 1).getAsJsonObject().get("macro").getAsString());
+    }
     public void testMoveValidationIsAtomic() throws Exception {
         ExtraKeyLayout layout = ExtraKeyLayout.parse("[[ESC,TAB],[CTRL]]");
         String before = layout.toJson();
