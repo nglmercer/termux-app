@@ -19,3 +19,5 @@ clipboard-image-max-cache-mib = 100
 ```
 
 Valid ranges are 1–64, 1–128 and 1–256 MiB respectively. Invalid values use that property's default. Each import captures its current settings; the smallest applicable file, batch or remaining cache quota wins. Lowering the cache limit never deletes completed files: imports fail until enough space is freed. Reload Termux settings after editing. These limits control encoded bytes, not image dimensions or full image validation. Actual provider and Android properties-reload behavior still require device testing.
+
+A pending Open Document result is held until the activity is visible and its service and session are attached. The result is limited to eight content URIs, each at most 4096 characters, and the selected session handle and pending URI list are included in Android saved state. If the original session exited or another session is selected, the result is discarded and the user must select again. URI grants are temporary; a provider can revoke access or a process restart can lose permission, in which case import reports failure. Saved-state delivery, URI grants and rotation still require Android device validation.

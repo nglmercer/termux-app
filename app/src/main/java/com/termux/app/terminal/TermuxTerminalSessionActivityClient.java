@@ -494,6 +494,7 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         checkAndScrollToSession(session);
         updateBackgroundColor();
         deliverPendingImageImport();
+        mActivity.consumePendingImagePickerWhenReady();
     }
 
     void notifyOfSessionChange() {
