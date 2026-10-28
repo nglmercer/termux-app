@@ -274,6 +274,9 @@
     <string name="share_image_to_terminal">Share image to terminal</string>
     <string name="share_image_confirm">Import %1$d image(s) and paste their paths into the current terminal? No Enter key will be sent.</string>
     <string name="share_image_import">Import and paste</string>
+    <string name="device_cpu">Device CPU busy (all cores): %1$s</string>
+    <string name="device_cpu_history">Recent CPU, oldest first: %1$s</string>
+    <string name="device_memory_history">Recent used RAM, oldest first: %1$s</string>
     <string name="device_memory">Device RAM (total minus available): %1$s</string>
     <string name="device_memory_amount">%1$d / %2$d MiB</string>
     <string name="device_low_memory">Android reports low memory.</string>
