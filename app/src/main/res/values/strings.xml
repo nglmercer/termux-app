@@ -239,6 +239,8 @@
     <string name="action_local_control">Local control</string>
     <string name="local_control_explanation">Allow local processes running as the Termux app UID to access the control socket. Read-only allows session names and process IDs. Read/write also permits creating and renaming sessions, resizing background sessions, and sending terminal input. The listener stops with the service.</string>
     <string name="local_control_output_enabled">Terminal output access is enabled.</string>
+    <string name="local_control_close_enabled">Force-close access is enabled for eligible new sessions.</string>
+    <string name="local_control_close_checkbox">Allow read/write clients to force-kill shells of new sessions when supported. Existing sessions are not eligible.</string>
     <string name="local_control_output_checkbox">Allow reading terminal output, which may contain secrets</string>
     <string name="local_control_read_only">Read-only</string>
     <string name="local_control_read_write">Read/write</string>

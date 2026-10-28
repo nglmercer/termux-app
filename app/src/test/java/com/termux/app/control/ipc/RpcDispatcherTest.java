@@ -13,8 +13,9 @@ import java.util.Set;
 public class RpcDispatcherTest extends TestCase {
     private static final class Backend implements ControlCore.Backend {
         int calls;
+        boolean closeEnabled;
         String lastId;
-        @Override public boolean isCloseEnabled() { return false; }
+        @Override public boolean isCloseEnabled() { return closeEnabled; }
         @Override public List<ControlCore.SessionInfo> list() {
             calls++;
             return Collections.singletonList(new ControlCore.SessionInfo("s1", ControlCore.State.RUNNING, 123, "Work"));
@@ -75,6 +76,22 @@ public class RpcDispatcherTest extends TestCase {
         JsonObject caps = object(send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.capabilities\"}", Collections.emptySet()));
         assertTrue(caps.getAsJsonObject("result").toString().contains("session.write"));
         assertFalse(caps.getAsJsonObject("result").toString().contains("session.close"));
+    }
+
+    public void testCloseCapabilityAndRequestRequireExplicitScope() throws Exception {
+        hello(); backend.closeEnabled = true;
+        EnumSet<ControlCore.Scope> write = EnumSet.of(ControlCore.Scope.SESSIONS_WRITE);
+        EnumSet<ControlCore.Scope> both = EnumSet.of(ControlCore.Scope.SESSIONS_WRITE, ControlCore.Scope.SESSIONS_CLOSE);
+        assertFalse(object(send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"system.capabilities\"}", write)).getAsJsonObject("result").toString().contains("session.close"));
+        assertTrue(object(send("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.capabilities\"}", both)).getAsJsonObject("result").toString().contains("session.close"));
+        String close = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.close\",\"params\":{\"id\":\"s1\"}}";
+        assertEquals("DENIED", object(send(close, write)).getAsJsonObject("error").get("message").getAsString());
+        assertEquals(0, backend.calls);
+        assertTrue(object(send(close, both)).getAsJsonObject("result").get("accepted").getAsBoolean());
+        assertEquals(1, backend.calls);
+        backend.closeEnabled = false;
+        assertEquals("UNAVAILABLE", object(send(close, both)).getAsJsonObject("error").get("message").getAsString());
+        assertEquals(1, backend.calls);
     }
 
     public void testTransportTimeoutPreservesUnknownOutcomeAndSuppressesNotifications() throws Exception {

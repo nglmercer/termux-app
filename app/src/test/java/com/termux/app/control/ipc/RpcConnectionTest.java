@@ -15,9 +15,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RpcConnectionTest extends TestCase {
     private static final class Backend implements ControlCore.Backend {
         int calls;
+        boolean closeEnabled;
         String target;
         byte[] received;
-        @Override public boolean isCloseEnabled() { return false; }
+        @Override public boolean isCloseEnabled() { return closeEnabled; }
         @Override public List<ControlCore.SessionInfo> list() {
             calls++;
             return Collections.singletonList(new ControlCore.SessionInfo("s1", ControlCore.State.RUNNING, 42, "test"));
@@ -68,6 +69,27 @@ public class RpcConnectionTest extends TestCase {
         assertEquals("s1", read(responses).getAsJsonObject("result").getAsJsonArray("sessions").get(0).getAsJsonObject().get("id").getAsString());
         assertEquals("DENIED", read(responses).getAsJsonObject("error").get("message").getAsString());
         assertNull(codec.read(responses));
+        assertEquals(1, backend.calls);
+    }
+
+    public void testWriteClientCannotCloseWithoutSeparateScope() throws Exception {
+        backend.closeEnabled = true;
+        String hello = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.hello\",\"params\":{\"version\":1}}";
+        String close = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.close\",\"params\":{\"id\":\"s1\"}}";
+        RpcConnection denied = new RpcConnection(new ControlCore(backend), dispatch,
+            EnumSet.of(ControlCore.Scope.SESSIONS_WRITE), () -> true);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        denied.serve(1000, 1000, new ByteArrayInputStream(requests(hello, close)), out);
+        ByteArrayInputStream replies = new ByteArrayInputStream(out.toByteArray());
+        read(replies);
+        assertEquals("DENIED", read(replies).getAsJsonObject("error").get("message").getAsString());
+        assertEquals(0, backend.calls);
+        RpcConnection allowed = new RpcConnection(new ControlCore(backend), dispatch,
+            EnumSet.of(ControlCore.Scope.SESSIONS_WRITE, ControlCore.Scope.SESSIONS_CLOSE), () -> true);
+        out.reset();
+        allowed.serve(1000, 1000, new ByteArrayInputStream(requests(hello, close)), out);
+        replies = new ByteArrayInputStream(out.toByteArray()); read(replies);
+        assertTrue(read(replies).getAsJsonObject("result").get("accepted").getAsBoolean());
         assertEquals(1, backend.calls);
     }
 

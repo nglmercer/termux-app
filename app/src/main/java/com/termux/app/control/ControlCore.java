@@ -10,7 +10,7 @@ public final class ControlCore {
     public static final int PROTOCOL_VERSION = 1;
     public static final int MAX_WRITE_BYTES = 64 * 1024;
 
-    public enum Scope { SESSIONS_READ, SESSIONS_WRITE, SESSIONS_OUTPUT }
+    public enum Scope { SESSIONS_READ, SESSIONS_WRITE, SESSIONS_OUTPUT, SESSIONS_CLOSE }
     public enum State { STARTING, RUNNING, EXITED }
     public enum Error { DENIED, INVALID_REQUEST, NOT_FOUND, NOT_RUNNING, BACKPRESSURE, CONFLICT, LIMIT_REACHED, UNAVAILABLE }
 
@@ -95,7 +95,9 @@ public final class ControlCore {
     /** Request termination; process exit and session removal occur asynchronously. */
     public void closeSession(Set<Scope> scopes, String id) throws ControlException {
         require(scopes, Scope.SESSIONS_WRITE);
+        require(scopes, Scope.SESSIONS_CLOSE);
         if (!validId(id)) throw new ControlException(Error.INVALID_REQUEST);
+        if (!mBackend.isCloseEnabled()) throw new ControlException(Error.UNAVAILABLE);
         mBackend.close(id);
     }
 
