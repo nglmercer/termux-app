@@ -262,7 +262,11 @@
     <string name="clipboard_image_busy">An image import is already in progress.</string>
     <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type.</string>
     <string name="clipboard_image_session_changed">Session changed. Images saved in %1$s</string>
-    <string name="clipboard_image_imported">Image paths pasted. The images are stored in the app cache.</string>
+    <string name="clipboard_image_preview">Imported image preview</string>
+    <plurals name="clipboard_image_imported_count">
+        <item quantity="one">%d image path pasted. Image stored in app cache.</item>
+        <item quantity="other">%d image paths pasted. Images stored in app cache.</item>
+    </plurals>
     <string name="action_import_image">Import image</string>
     <string name="clipboard_image_picker_unavailable">No document picker is available.</string>
     <string name="clipboard_image_picker_session_changed">The terminal session changed. Select the image again in the intended session.</string>
