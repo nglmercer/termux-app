@@ -38,6 +38,7 @@ import com.termux.app.control.ControlCore;
 import com.termux.app.monitor.ProcessSnapshot;
 import com.termux.app.monitor.ProcessTable;
 import com.termux.app.monitor.DeviceSnapshot;
+import com.termux.app.monitor.DeviceCpuSnapshot;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.clipboard.ClipboardImageImporter;
@@ -233,6 +234,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private int mProcessIntervalMs = 2000;
     private ProcessTable mProcessTable;
     private String mProcessHeader;
+    private DeviceCpuSnapshot mPreviousDeviceCpu;
+    private final java.util.ArrayDeque<String> mDeviceCpuHistory = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<String> mDeviceMemoryHistory = new java.util.ArrayDeque<>();
 
     private static final String ARG_TERMINAL_TOOLBAR_TEXT_INPUT = "terminal_toolbar_text_input";
     private static final String ARG_ACTIVITY_RECREATED = "activity_recreated";
@@ -1156,6 +1160,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
             mPreviousProcessSnapshot = null;
             mPreviousProcessRoots = null;
+            mPreviousDeviceCpu = null; mDeviceCpuHistory.clear(); mDeviceMemoryHistory.clear();
             mProcessTable = null; mProcessHeader = null; mProcessText = null; mProcessSearch = null; mProcessSort = null; mProcessScope = null;
         });
         dialog.setOnShowListener(ignored -> {
@@ -1228,6 +1233,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 catch (RuntimeException e) { prepared = null; }
                 final ProcessTable table = prepared;
                 final DeviceSnapshot device = DeviceSnapshot.collect(appContext);
+                final DeviceCpuSnapshot deviceCpu = DeviceCpuSnapshot.collect(new java.io.File("/proc/stat"));
                 main.post(() -> {
                     busy.set(false);
                     TermuxActivity current = activity.get();
@@ -1245,7 +1251,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                             !monitorRoots.tasks.equals(currentRoots.tasks) || monitorRoots.unknownTaskPids != currentRoots.unknownTaskPids) {
                             current.setProcessMessage(current.getString(R.string.process_snapshot_changed));
                         } else {
-                            current.showProcessSnapshot(snapshot, table, device, roots, monitorRoots.unknownTaskPids, sampledAt);
+                            current.showProcessSnapshot(snapshot, table, device, deviceCpu, roots, monitorRoots.unknownTaskPids, sampledAt);
                         }
                     }
                     current.scheduleProcessRefresh();
@@ -1258,7 +1264,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
     }
 
-    private void showProcessSnapshot(ProcessSnapshot snapshot, ProcessTable table, DeviceSnapshot device, java.util.Set<Integer> roots, int unknownTaskPids,
+    private void showProcessSnapshot(ProcessSnapshot snapshot, ProcessTable table, DeviceSnapshot device, DeviceCpuSnapshot deviceCpu, java.util.Set<Integer> roots, int unknownTaskPids,
                                      long sampledAt) {
         mProcessTable = table;
         mPreviousProcessSnapshot = snapshot;
@@ -1267,13 +1273,25 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         StringBuilder text = new StringBuilder(getString(R.string.process_snapshot_caveat));
         String unknown = getString(R.string.diagnostics_unknown);
         String memory = unknown;
+        Double memoryPercent = null;
         if (device.totalMemoryBytes != null && device.availableMemoryBytes != null) {
             Long used = DeviceSnapshot.memoryUsedBytes(device.totalMemoryBytes, device.availableMemoryBytes);
-            if (used != null) memory = getString(R.string.device_memory_amount, used / 1048576, device.totalMemoryBytes / 1048576);
+            if (used != null) {
+                memory = getString(R.string.device_memory_amount, used / 1048576, device.totalMemoryBytes / 1048576);
+                memoryPercent = 100.0 * used / device.totalMemoryBytes;
+            }
         }
         String battery = device.batteryPercent == null ? unknown : getString(R.string.device_battery_amount, device.batteryPercent);
         String thermal = device.thermalStatus == null ? unknown : thermalStatusLabel(device.thermalStatus);
-        text.append("\n\n").append(getString(R.string.device_memory, memory));
+        Double cpuPercent = DeviceCpuSnapshot.percent(mPreviousDeviceCpu, deviceCpu);
+        mPreviousDeviceCpu = deviceCpu;
+        String cpu = formatDevicePercent(cpuPercent);
+        addDeviceHistory(mDeviceCpuHistory, cpu);
+        addDeviceHistory(mDeviceMemoryHistory, formatDevicePercent(memoryPercent));
+        text.append("\n\n").append(getString(R.string.device_cpu, cpu));
+        text.append("\n").append(getString(R.string.device_cpu_history, android.text.TextUtils.join(", ", mDeviceCpuHistory)));
+        text.append("\n").append(getString(R.string.device_memory, memory));
+        text.append("\n").append(getString(R.string.device_memory_history, android.text.TextUtils.join(", ", mDeviceMemoryHistory)));
         if (Boolean.TRUE.equals(device.lowMemory)) text.append("\n").append(getString(R.string.device_low_memory));
         text.append("\n").append(getString(R.string.device_battery, battery));
         text.append("\n").append(getString(R.string.device_thermal, thermal));
@@ -1282,6 +1300,16 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         if (unknownTaskPids > 0) text.append("\n\n").append(getString(R.string.process_snapshot_unknown_tasks, unknownTaskPids));
         mProcessHeader = text.toString();
         renderProcessTable();
+    }
+
+    private String formatDevicePercent(Double value) {
+        return value == null ? getString(R.string.diagnostics_unknown) :
+            String.format(java.util.Locale.getDefault(), "%.1f%%", value);
+    }
+
+    private static void addDeviceHistory(java.util.ArrayDeque<String> history, String value) {
+        if (history.size() >= 8) history.removeFirst();
+        history.addLast(value);
     }
 
     private void setProcessMessage(String message) {
