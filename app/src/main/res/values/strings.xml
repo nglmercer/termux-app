@@ -250,9 +250,13 @@
     <string name="local_control_enabled">Local control enabled for this service session.</string>
     <string name="local_control_start_failed">Local control could not start. Check for a previous listener or a stale control socket.</string>
     <string name="local_control_unavailable">Local control is unavailable.</string>
+    <string name="clipboard_type_unsupported">This clipboard item is not supported. Copy text or choose a PNG, JPEG, or WebP image.</string>
+    <string name="clipboard_text_busy">A clipboard text import is already in progress.</string>
+    <string name="clipboard_text_failed">Could not read clipboard text. Copy it again; text from a content provider is limited to 1 MiB.</string>
+    <string name="clipboard_text_session_changed">The terminal session changed. Copy and paste the text again in the intended session.</string>
     <string name="clipboard_image_too_many">Paste at most eight images at a time.</string>
     <string name="clipboard_image_busy">An image import is already in progress.</string>
-    <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type. Limits are 20 MiB per image, 40 MiB per batch, and 100 MiB in the image cache.</string>
+    <string name="clipboard_image_failed">Could not import the image. Check clipboard access and image type.</string>
     <string name="clipboard_image_session_changed">Session changed. Images saved in %1$s</string>
     <string name="clipboard_image_imported">Image paths pasted. The images are stored in the app cache.</string>
     <string name="action_import_image">Import image</string>
@@ -261,7 +265,7 @@
     <string name="clipboard_image_not_pasted">Image paths were not pasted. Images are saved in %1$s</string>
     <string name="clipboard_image_access_failed">Image access expired or was denied. Copy the image again or use Import image.</string>
     <string name="clipboard_image_unsupported">Unsupported or invalid image. Choose a PNG, JPEG, or WebP image.</string>
-    <string name="clipboard_image_size_limit">Image import exceeds the 20 MiB per image or 40 MiB batch limit.</string>
+    <string name="clipboard_image_size_limit">Image import exceeds the %1$d MiB per image or %2$d MiB batch limit.</string>
     <string name="clipboard_image_cache_full">Image cache is full. Move or remove images you no longer need from the app cache.</string>
     <string name="share_image_to_terminal">Share image to terminal</string>
     <string name="share_image_confirm">Import %1$d image(s) and paste their paths into the current terminal? No Enter key will be sent.</string>

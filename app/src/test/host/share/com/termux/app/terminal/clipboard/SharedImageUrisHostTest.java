@@ -13,6 +13,10 @@ public final class SharedImageUrisHostTest {
         try { SharedImageUris.fromIntent(intent); throw new AssertionError("Expected rejection"); }
         catch (IllegalArgumentException expected) { }
     }
+    private static void rejectedPicker(Intent intent) {
+        try { PickerImageSelection.fromIntent(intent); throw new AssertionError("Expected picker rejection"); }
+        catch (IllegalArgumentException expected) { }
+    }
     public static void main(String[] args) {
         Uri a = Uri.parse("content://provider/a"), b = Uri.parse("content://provider/b");
         check(SharedImageUris.fromIntent(new Intent(Intent.ACTION_SEND).stream(a)).get(0) == a);
@@ -28,6 +32,14 @@ public final class SharedImageUrisHostTest {
         for (int i = 0; i < 9; i++) batch.add(a);
         rejected(new Intent(Intent.ACTION_SEND_MULTIPLE).streams(batch));
         rejected(new Intent(Intent.ACTION_SEND).clip(new ClipData(batch)));
-        System.out.println("Shared image URI validation passed (host Android stubs)");
+        check(PickerImageSelection.fromIntent(new Intent("picker").data(a)).get(0) == a);
+        check(PickerImageSelection.fromIntent(new Intent("picker").clip(new ClipData(Arrays.asList(a, b)))).size() == 2);
+        rejectedPicker(new Intent("picker"));
+        rejectedPicker(new Intent("picker").data(Uri.parse("file:///image")));
+        rejectedPicker(new Intent("picker").clip(new ClipData(batch)));
+        StringBuilder longUri = new StringBuilder("content://provider/");
+        while (longUri.length() <= 4096) longUri.append('x');
+        rejectedPicker(new Intent("picker").data(Uri.parse(longUri.toString())));
+        System.out.println("Shared and picker image URI validation passed (host Android stubs)");
     }
 }

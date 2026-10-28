@@ -6,5 +6,6 @@ cd "$project_dir"
 out_dir="$project_dir/build/share-uri-host"
 mkdir -p "$out_dir"
 javac -d "$out_dir" $(find app/src/test/host/share -name '*.java') \
-    app/src/main/java/com/termux/app/terminal/clipboard/SharedImageUris.java
+    app/src/main/java/com/termux/app/terminal/clipboard/SharedImageUris.java \
+    app/src/main/java/com/termux/app/terminal/clipboard/PickerImageSelection.java
 java -cp "$out_dir" com.termux.app.terminal.clipboard.SharedImageUrisHostTest

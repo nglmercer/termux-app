@@ -259,6 +259,12 @@ public abstract class TermuxSharedProperties {
          */
         switch (key) {
             /* int */
+            case TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_FILE_MIB:
+                return ClipboardImageLimits.parseFile(value);
+            case TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_BATCH_MIB:
+                return ClipboardImageLimits.parseBatch(value);
+            case TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_CACHE_MIB:
+                return ClipboardImageLimits.parseCache(value);
             case TermuxPropertyConstants.KEY_BELL_BEHAVIOUR:
                 return (int) getBellBehaviourInternalPropertyValueFromValue(value);
             case TermuxPropertyConstants.KEY_DELETE_TMPDIR_FILES_OLDER_THAN_X_DAYS_ON_EXIT:
@@ -648,6 +654,13 @@ public abstract class TermuxSharedProperties {
 
     public int getTerminalMarginVertical() {
         return (int) getInternalPropertyValue(TermuxPropertyConstants.KEY_TERMINAL_MARGIN_VERTICAL, true);
+    }
+
+    public synchronized ClipboardImageLimits getClipboardImageLimits() {
+        return ClipboardImageLimits.of(
+            (int) getInternalPropertyValue(TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_FILE_MIB, true),
+            (int) getInternalPropertyValue(TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_BATCH_MIB, true),
+            (int) getInternalPropertyValue(TermuxPropertyConstants.KEY_CLIPBOARD_IMAGE_MAX_CACHE_MIB, true));
     }
 
     public int getTerminalTranscriptRows() {
