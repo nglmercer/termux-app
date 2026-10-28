@@ -57,7 +57,7 @@ public final class ExtraKeyLayout {
         }
     }
 
-    private static JsonElement read(JsonReader reader, int depth, int[] count) throws IOException {
+    static JsonElement read(JsonReader reader, int depth, int[] count) throws IOException {
         if (depth > MAX_DEPTH || ++count[0] > MAX_VALUES) throw new IOException("Layout is too complex");
         switch (reader.peek()) {
             case BEGIN_ARRAY: {

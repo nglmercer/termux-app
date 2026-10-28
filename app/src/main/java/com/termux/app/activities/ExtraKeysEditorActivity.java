@@ -1,6 +1,11 @@
 package com.termux.app.activities;
 
 import android.app.AlertDialog;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -17,6 +22,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.termux.R;
 import com.termux.app.extrakeys.ExtraKeyLayout;
+import com.termux.app.extrakeys.ExtraKeyDocument;
 import com.termux.app.extrakeys.ExtraKeyPropertyStore;
 import com.termux.shared.settings.properties.SharedProperties;
 import com.termux.shared.termux.TermuxConstants;
@@ -26,6 +32,8 @@ import com.termux.shared.termux.settings.properties.TermuxPropertyConstants;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Explicit, local editor for existing extra-key configuration. */
 public final class ExtraKeysEditorActivity extends AppCompatActivity {
     private static final AtomicBoolean RELOAD_NEEDED = new AtomicBoolean();
+    private static final int REQUEST_IMPORT = 48380, REQUEST_EXPORT = 48381;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private LinearLayout content;
@@ -65,6 +74,10 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
         Button revert = button(R.string.extra_keys_editor_revert, v -> revert());
         save = button(R.string.extra_keys_editor_save, v -> save()); save.setEnabled(false);
         actions.addView(presets); actions.addView(revert); actions.addView(save); root.addView(actions);
+        LinearLayout transfer = new LinearLayout(this);
+        transfer.addView(button(R.string.extra_keys_editor_import, v -> requestImport()));
+        transfer.addView(button(R.string.extra_keys_editor_export, v -> requestExport()));
+        root.addView(transfer);
         setContentView(root);
         load();
     }
@@ -236,6 +249,76 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
         catch (IOException e) { message(R.string.extra_keys_editor_invalid); }
     }
 
+    private void requestImport() {
+        if (busy || layout == null) return;
+        new AlertDialog.Builder(this).setMessage(R.string.extra_keys_editor_import_confirm)
+            .setPositiveButton(android.R.string.ok, (d, w) -> {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/json");
+                try { startActivityForResult(intent, REQUEST_IMPORT); }
+                catch (ActivityNotFoundException e) { message(R.string.extra_keys_editor_picker_failed); }
+            }).setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private void requestExport() {
+        if (busy || layout == null) return;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, "termux-extra-keys.json");
+        try { startActivityForResult(intent, REQUEST_EXPORT); }
+        catch (ActivityNotFoundException e) { message(R.string.extra_keys_editor_picker_failed); }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_IMPORT && requestCode != REQUEST_EXPORT) return;
+        if (resultCode != Activity.RESULT_OK) return;
+        Uri uri = data == null ? null : data.getData();
+        if (busy || layout == null || snapshot == null || uri == null || !"content".equals(uri.getScheme())) {
+            message(R.string.extra_keys_editor_transfer_failed); return;
+        }
+        final ExtraKeyLayout exported;
+        try { exported = requestCode == REQUEST_EXPORT ? ExtraKeyLayout.parse(layout.toJson()) : null; }
+        catch (IOException e) { message(R.string.extra_keys_editor_invalid); return; }
+        busy = true; render();
+        status.setText(requestCode == REQUEST_IMPORT ? R.string.extra_keys_editor_importing : R.string.extra_keys_editor_exporting);
+        ContentResolver resolver = getApplicationContext().getContentResolver();
+        WeakReference<ExtraKeysEditorActivity> ref = new WeakReference<>(this);
+        Handler handler = main;
+        io.execute(() -> {
+            ExtraKeyLayout imported = null; boolean success = false;
+            try {
+                if (requestCode == REQUEST_IMPORT) {
+                    try (InputStream input = resolver.openInputStream(uri)) {
+                        if (input == null) throw new IOException("Input unavailable");
+                        imported = ExtraKeyDocument.read(input);
+                        new ExtraKeysInfo(imported.toJson(), "default", ExtraKeysConstants.CONTROL_CHARS_ALIASES);
+                    }
+                } else {
+                    // Validate and serialize before a provider is allowed to truncate the selected document.
+                    java.io.ByteArrayOutputStream staged = new java.io.ByteArrayOutputStream();
+                    ExtraKeyDocument.write(staged, exported);
+                    try (OutputStream output = resolver.openOutputStream(uri, "wt")) {
+                        if (output == null) throw new IOException("Output unavailable");
+                        staged.writeTo(output);
+                        output.flush();
+                    }
+                }
+                success = true;
+            } catch (Exception ignored) { /* Never log document contents or provider URI. */ }
+            final ExtraKeyLayout result = imported;
+            final boolean completed = success;
+            handler.post(() -> {
+                ExtraKeysEditorActivity current = ref.get();
+                if (current == null || current.isFinishing() || current.isDestroyed()) return;
+                current.busy = false;
+                current.status.setText(current.getString(R.string.extra_keys_editor_explanation, current.snapshot.file().getAbsolutePath()));
+                if (completed && requestCode == REQUEST_IMPORT) current.layout = result;
+                current.render();
+                current.message(completed ? (requestCode == REQUEST_IMPORT ? R.string.extra_keys_editor_imported : R.string.extra_keys_editor_exported) :
+                    (requestCode == REQUEST_IMPORT ? R.string.extra_keys_editor_import_failed : R.string.extra_keys_editor_export_failed));
+            });
+        });
+    }
+
     private void save() {
         if (busy || saveBlocked || snapshot == null || layout == null) return;
         final ExtraKeyLayout copy;
@@ -282,5 +365,8 @@ public final class ExtraKeysEditorActivity extends AppCompatActivity {
     }
     private void message(int text) { new AlertDialog.Builder(this).setMessage(text).setPositiveButton(android.R.string.ok, null).show(); }
     @Override public void onBackPressed() { if (!saving) super.onBackPressed(); }
-    @Override protected void onDestroy() { io.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        if (saving) io.shutdown(); else io.shutdownNow();
+        super.onDestroy();
+    }
 }

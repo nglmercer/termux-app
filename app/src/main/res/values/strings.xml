@@ -244,6 +244,17 @@
     <string name="extra_keys_editor_presets">Presets</string>
     <string name="extra_keys_editor_preset_confirm">Replace the current unsaved layout with this preset?</string>
     <string name="extra_keys_editor_revert">Revert</string>
+    <string name="extra_keys_editor_import">Import</string>
+    <string name="extra_keys_editor_export">Export</string>
+    <string name="extra_keys_editor_import_confirm">Replace the unsaved layout with an imported JSON file? Nothing is saved to termux.properties until you tap Save.</string>
+    <string name="extra_keys_editor_picker_failed">No document picker is available.</string>
+    <string name="extra_keys_editor_transfer_failed">The document could not be opened. Try again after the editor finishes loading.</string>
+    <string name="extra_keys_editor_importing">Importing layout…</string>
+    <string name="extra_keys_editor_exporting">Exporting layout…</string>
+    <string name="extra_keys_editor_imported">Layout imported into the preview. Tap Save to apply it.</string>
+    <string name="extra_keys_editor_exported">Layout exported.</string>
+    <string name="extra_keys_editor_import_failed">Could not import this document. The preview was not changed.</string>
+    <string name="extra_keys_editor_export_failed">Export failed and the selected file may be incomplete. Check it before retrying.</string>
     <string name="extra_keys_editor_save">Save</string>
     <string name="extra_keys_editor_row">Row %1$d</string>
     <string name="extra_keys_editor_macro_label">Macro: %1$s</string>
