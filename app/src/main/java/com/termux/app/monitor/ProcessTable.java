@@ -10,7 +10,7 @@ import java.util.Map;
 
 /** Immutable, local presentation data; unknown measurements sort after known values. */
 public final class ProcessTable {
-    public enum Sort { PID, NAME, CPU, RSS }
+    public enum Sort { PID, NAME, CPU, RSS, TREE }
     public enum Scope { OWNED, SESSION, TASK, ALL_VISIBLE }
     public static final class Row {
         public final ProcessSnapshot.Entry entry;
@@ -80,6 +80,46 @@ public final class ProcessTable {
                 Integer.toString(e.pid).contains(needle) || Integer.toString(e.ppid).contains(needle)) selected.add(row);
         }
         return selected;
+    }
+    /** Tree order for the currently matching rows. Missing parents become roots.
+     * Parent links are snapshots and may be stale; cycles are broken deterministically. */
+    public List<TreeRow> selectTree(String query, Scope scope) {
+        List<Row> matching = select(query, Sort.PID, scope);
+        Map<Integer, Row> byPid = new HashMap<>();
+        Map<Integer, List<Row>> children = new HashMap<>();
+        for (Row row : matching) byPid.put(row.entry.pid, row);
+        List<Row> roots = new ArrayList<>();
+        for (Row row : matching) {
+            if (row.entry.ppid == row.entry.pid || !byPid.containsKey(row.entry.ppid)) roots.add(row);
+            else children.computeIfAbsent(row.entry.ppid, ignored -> new ArrayList<>()).add(row);
+        }
+        List<TreeRow> result = new ArrayList<>();
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        // Roots first, then any otherwise unreachable cycle, each in PID order.
+        for (Row root : roots) appendTree(root, children, visited, result);
+        for (Row root : matching) appendTree(root, children, visited, result);
+        return result;
+    }
+    public static final class TreeRow {
+        public final Row row;
+        public final int depth;
+        private TreeRow(Row row, int depth) { this.row = row; this.depth = depth; }
+    }
+    private static void appendTree(Row root, Map<Integer, List<Row>> children,
+                                   java.util.Set<Integer> visited, List<TreeRow> result) {
+        if (visited.contains(root.entry.pid)) return;
+        java.util.ArrayDeque<TreeRow> pending = new java.util.ArrayDeque<>();
+        pending.push(new TreeRow(root, 0));
+        while (!pending.isEmpty()) {
+            TreeRow next = pending.pop();
+            if (!visited.add(next.row.entry.pid)) continue;
+            result.add(next);
+            List<Row> descendants = children.get(next.row.entry.pid);
+            if (descendants != null) {
+                for (int i = descendants.size() - 1; i >= 0; i--)
+                    pending.push(new TreeRow(descendants.get(i), Math.min(next.depth + 1, 8)));
+            }
+        }
     }
     private static Comparator<Row> comparator(Sort sort) {
         Comparator<Row> comparator;

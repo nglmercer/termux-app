@@ -100,6 +100,46 @@ public class ProcessSnapshotTest {
             for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
         }
     }
+    @Test public void treeGroupsVisibleParentsAndPromotesFilteredOrMissingParents() throws Exception {
+        File root = Files.createTempDirectory("proc-tree").toFile();
+        try {
+            add(root, 10, 1, 1000); add(root, 11, 10, 1000); add(root, 12, 10, 1000);
+            add(root, 13, 11, 1000); add(root, 20, 99, 1000); add(root, 21, 20, 2000);
+            writeStat(root, 11, "child", 10, 55, 1, 1);
+            writeStat(root, 13, "child-helper", 11, 55, 1, 1);
+            ProcessSnapshot snapshot = ProcessSnapshot.collect(root, 1000, Collections.singleton(10));
+            ProcessTable table = new ProcessTable(snapshot, null, 0, 100, 4096, Collections.singleton(10), Collections.emptySet());
+            java.util.List<ProcessTable.TreeRow> rows = table.selectTree("", ProcessTable.Scope.ALL_VISIBLE);
+            assertEquals(5, rows.size());
+            int[] ids = {10, 11, 13, 12, 20}; int[] depths = {0, 1, 2, 1, 0};
+            for (int i = 0; i < ids.length; i++) { assertEquals(ids[i], rows.get(i).row.entry.pid); assertEquals(depths[i], rows.get(i).depth); }
+            rows = table.selectTree("child", ProcessTable.Scope.OWNED);
+            assertEquals(2, rows.size()); assertEquals(11, rows.get(0).row.entry.pid); assertEquals(0, rows.get(0).depth);
+            assertEquals(13, rows.get(1).row.entry.pid); assertEquals(1, rows.get(1).depth);
+            assertEquals(4, table.selectTree("", ProcessTable.Scope.OWNED).size());
+            assertTrue(table.selectTree("missing", ProcessTable.Scope.ALL_VISIBLE).isEmpty());
+        } finally {
+            for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
+        }
+    }
+    @Test public void treeBreaksCyclesAndLimitsIndentation() throws Exception {
+        File root = Files.createTempDirectory("proc-tree-cycles").toFile();
+        try {
+            add(root, 1, 2, 1000); add(root, 2, 1, 1000); add(root, 3, 3, 1000);
+            for (int i = 4; i <= 30; i++) add(root, i, i == 4 ? 3 : i - 1, 1000);
+            ProcessSnapshot snapshot = ProcessSnapshot.collect(root, 1000, Collections.singleton(3));
+            ProcessTable table = new ProcessTable(snapshot, null, 0, 100, 4096);
+            java.util.List<ProcessTable.TreeRow> rows = table.selectTree("", ProcessTable.Scope.ALL_VISIBLE);
+            assertEquals(30, rows.size());
+            java.util.Set<Integer> visited = new java.util.HashSet<>();
+            for (ProcessTable.TreeRow row : rows) { assertTrue(visited.add(row.row.entry.pid)); assertTrue(row.depth <= 8); }
+            assertEquals(3, rows.get(0).row.entry.pid); assertEquals(0, rows.get(0).depth);
+            assertEquals(1, rows.get(28).row.entry.pid); assertEquals(0, rows.get(28).depth);
+            assertEquals(2, rows.get(29).row.entry.pid); assertEquals(1, rows.get(29).depth);
+        } finally {
+            for (File dir : root.listFiles()) { for (File f : dir.listFiles()) f.delete(); dir.delete(); } root.delete();
+        }
+    }
     private static void writeStat(File root, int pid, String name, int ppid, long start, long user, long rss) throws Exception {
         String line = pid + " (" + name + ") S " + ppid + " 0 0 0 0 0 0 0 0 0 " + user + " 20 0 0 0 0 0 0 " + start + " 0 " + rss;
         Files.write(new File(new File(root, String.valueOf(pid)), "stat").toPath(), line.getBytes(StandardCharsets.UTF_8));

@@ -229,6 +229,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private android.widget.TextView mProcessText;
     private EditText mProcessSearch;
     private android.widget.Spinner mProcessSort, mProcessScope;
+    private static final int[] PROCESS_INTERVALS_MS = {2000, 5000, 10000, 30000};
+    private int mProcessIntervalMs = 2000;
     private ProcessTable mProcessTable;
     private String mProcessHeader;
 
@@ -1111,6 +1113,28 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mProcessScope.setAdapter(scopes);
         mProcessScope.setContentDescription(getString(R.string.process_snapshot_scope));
         panel.addView(mProcessScope);
+        android.widget.Spinner interval = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<CharSequence> intervals = android.widget.ArrayAdapter.createFromResource(this,
+            R.array.process_snapshot_intervals, android.R.layout.simple_spinner_item);
+        intervals.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        interval.setAdapter(intervals);
+        interval.setContentDescription(getString(R.string.process_snapshot_interval));
+        int savedInterval = getPreferences(MODE_PRIVATE).getInt("process_monitor_interval_ms", 2000);
+        int intervalIndex = 0;
+        for (int i = 0; i < PROCESS_INTERVALS_MS.length; i++)
+            if (PROCESS_INTERVALS_MS[i] == savedInterval) intervalIndex = i;
+        mProcessIntervalMs = PROCESS_INTERVALS_MS[intervalIndex];
+        interval.setSelection(intervalIndex);
+        interval.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                if (position < 0 || position >= PROCESS_INTERVALS_MS.length) return;
+                mProcessIntervalMs = PROCESS_INTERVALS_MS[position];
+                getPreferences(MODE_PRIVATE).edit().putInt("process_monitor_interval_ms", mProcessIntervalMs).apply();
+                scheduleProcessRefresh();
+            }
+            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+        });
+        panel.addView(interval);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         mProcessText = new android.widget.TextView(this);
         mProcessText.setText(R.string.process_snapshot_loading);
@@ -1164,7 +1188,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private void scheduleProcessRefresh() {
         mProcessRefreshHandler.removeCallbacks(mProcessRefresh);
         if (mProcessDialog != null && mProcessAutoRefresh && mIsVisible)
-            mProcessRefreshHandler.postDelayed(mProcessRefresh, 2000);
+            mProcessRefreshHandler.postDelayed(mProcessRefresh, mProcessIntervalMs);
     }
 
     private void loadProcessSnapshot() {
@@ -1273,21 +1297,29 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         ProcessTable.Scope[] scopes = ProcessTable.Scope.values();
         int scopePosition = mProcessScope.getSelectedItemPosition();
         ProcessTable.Scope scope = scopePosition >= 0 && scopePosition < scopes.length ? scopes[scopePosition] : ProcessTable.Scope.OWNED;
-        java.util.List<ProcessTable.Row> rows = mProcessTable.select(mProcessSearch.getText().toString(), sort, scope);
+        java.util.List<ProcessTable.TreeRow> tree = sort == ProcessTable.Sort.TREE ?
+            mProcessTable.selectTree(mProcessSearch.getText().toString(), scope) : null;
+        java.util.List<ProcessTable.Row> rows = tree == null ? mProcessTable.select(mProcessSearch.getText().toString(), sort, scope) : null;
+        int rowCount = tree == null ? rows.size() : tree.size();
         StringBuilder text = new StringBuilder(mProcessHeader);
-        if (rows.isEmpty()) text.append("\n\n").append(getString(R.string.process_snapshot_empty_search));
-        int count = Math.min(rows.size(), 100);
+        if (rowCount == 0) text.append("\n\n").append(getString(R.string.process_snapshot_empty_search));
+        int count = Math.min(rowCount, 100);
         for (int i = 0; i < count; i++) {
-            ProcessTable.Row row = rows.get(i);
+            ProcessTable.Row row = tree == null ? rows.get(i) : tree.get(i).row;
             ProcessSnapshot.Entry entry = row.entry;
             String name = entry.name.substring(0, Math.min(entry.name.length(), 80)).replaceAll("[\\p{Cntrl}]", "?");
             String rssText = row.rssKiB == null ? getString(R.string.diagnostics_unknown) : getString(R.string.process_snapshot_rss, row.rssKiB);
             String cpuText = row.cpuPercent == null ? getString(R.string.diagnostics_unknown) :
                 String.format(java.util.Locale.getDefault(), "%.1f%%", row.cpuPercent);
-            text.append("\n\n").append(getString(R.string.process_snapshot_entry,
+            text.append("\n\n");
+            if (tree != null && tree.get(i).depth > 0) {
+                for (int level = 0; level < tree.get(i).depth; level++) text.append("  ");
+                text.append("↳ ");
+            }
+            text.append(getString(R.string.process_snapshot_entry,
                 entry.pid, entry.ppid, name, String.valueOf(entry.state), rssText, cpuText));
         }
-        if (rows.size() > count) text.append("\n\n").append(getString(R.string.process_snapshot_truncated));
+        if (rowCount > count) text.append("\n\n").append(getString(R.string.process_snapshot_truncated));
         mProcessText.setText(text.toString());
     }
 
